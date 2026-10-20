@@ -45,6 +45,41 @@ private final class HeaderDragView: NSView {
     /// overlay to the WKWebView (which then handles hover and click
     /// natively). Otherwise we claim the event so `mouseDown` can run
     /// the drag/click-forward logic.
+    // The overlay sits above the web view across the header band, so a file
+    // dragged over the header would land here, not on LibraryWebView. Only
+    // file URLs are registered and LibraryWebView handles those without
+    // using the drag location, so the calls are forwarded as they are.
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        webView?.draggingEntered(sender) ?? []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        webView?.draggingUpdated(sender) ?? []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        webView?.draggingExited(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        webView?.prepareForDragOperation(sender) ?? false
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        webView?.performDragOperation(sender) ?? false
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        webView?.concludeDragOperation(sender)
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let sv = superview else { return super.hitTest(point) }
         let windowPoint = sv.convert(point, to: nil)
@@ -526,6 +561,65 @@ private final class WebDownloadDelegate: NSObject, WKNavigationDelegate, WKDownl
     }
 }
 
+/// The Library's web view, plus native file drops: dragging audio or video
+/// files from Finder onto the window imports and transcribes them
+/// (`AudioImporter`). File drags are taken natively because a page only sees
+/// a dropped file's bytes, never its path, and an unhandled file drop makes
+/// WKWebView navigate to the file. Every other drag (text, the page's own
+/// drag and drop) goes to WebKit as before. While a file is over the window
+/// the page shows its drop overlay via the `corder-drop` event.
+private final class LibraryWebView: WKWebView {
+    private var fileDragActive = false
+
+    private func fileURLs(_ info: NSDraggingInfo) -> [URL] {
+        let objs = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true])
+        return (objs as? [URL]) ?? []
+    }
+
+    private func setDropOverlay(_ active: Bool) {
+        guard fileDragActive != active else { return }
+        fileDragActive = active
+        evaluateJavaScript(
+            "window.dispatchEvent(new CustomEvent('corder-drop',{detail:\(active)}))",
+            completionHandler: nil)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !fileURLs(sender).isEmpty else { return super.draggingEntered(sender) }
+        setDropOverlay(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard fileDragActive else { return super.draggingUpdated(sender) }
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        guard fileDragActive else { return super.draggingExited(sender) }
+        setDropOverlay(false)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard fileDragActive else { return super.prepareForDragOperation(sender) }
+        return true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard fileDragActive else { return super.performDragOperation(sender) }
+        setDropOverlay(false)
+        AudioImporter.importFiles(fileURLs(sender))
+        return true
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        guard !fileDragActive else { return }
+        super.concludeDragOperation(sender)
+    }
+}
+
 final class LibraryWindow: NSWindowController {
     static let shared = LibraryWindow()
 
@@ -728,7 +822,8 @@ final class LibraryWindow: NSWindowController {
             forMainFrameOnly: true))
         self.bridgeHandler = handler
 
-        let wv = WKWebView(frame: win.contentView!.bounds, configuration: cfg)
+        let wv = LibraryWebView(frame: win.contentView!.bounds, configuration: cfg)
+        wv.registerForDraggedTypes([.fileURL])
         wv.autoresizingMask = [.width, .height]
         wv.setValue(false, forKey: "drawsBackground")
         let dl = WebDownloadDelegate(window: win)
@@ -840,6 +935,17 @@ final class LibraryWindow: NSWindowController {
     /// NS one and complains about the override signature).
     func dismiss() {
         window?.close()
+    }
+
+    /// Select a session in the page right away (an imported file), without
+    /// waiting for the meeting-list poll.
+    func openMeeting(_ id: String) {
+        guard webView != nil, webView.url != nil,
+              let data = try? JSONSerialization.data(withJSONObject: ["id": id]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript(
+            "window.dispatchEvent(new CustomEvent('corder-open-meeting',{detail:\(json)}))",
+            completionHandler: nil)
     }
 
     func postToast(title: String, body: String, kind: String = "info") {

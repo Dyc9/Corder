@@ -19,6 +19,8 @@ export const LANGS: { code: Lang; name: string; native: string; cc: string }[] =
 ];
 
 interface Strings {
+  drop_title: string;
+  drop_sub: string;
   breadcrumb_records: string;
   breadcrumb_dashboard: string;
 
@@ -442,6 +444,8 @@ interface Strings {
 }
 
 const en: Strings = {
+  drop_title: "Drop to transcribe",
+  drop_sub: "Audio or video files, one session each",
   breadcrumb_records: "Recordings",
   breadcrumb_dashboard: "Welcome",
 

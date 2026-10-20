@@ -6038,3 +6038,28 @@ body.resizing { cursor: col-resize; user-select: none; }
 @keyframes copy-check-draw {
   to { stroke-dashoffset: 0; }
 }
+
+/* File drag over the Library window (DropOverlay). Reuses the update
+   overlay backdrop; the drop is handled natively, so the layer never takes
+   pointer events. */
+.drop-overlay {
+  pointer-events: none;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+.drop-zone {
+  align-self: stretch;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 2px dashed var(--accent);
+  border-radius: 16px;
+  text-align: center;
+}
+.drop-zone-icon {
+  color: var(--accent);
+  margin-bottom: 8px;
+}

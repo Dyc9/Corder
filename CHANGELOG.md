@@ -16,6 +16,12 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.80] - 2026-10-20
+
+### Added
+
+- Drop audio or video files onto the Corder window to transcribe them. Each file becomes its own session with speakers, a title and a summary, the same as a recording. Works with mp3, m4a, wav, aiff, flac and the sound of mp4 or mov files. Several files at once are transcribed one after another.
+
 ## [0.15.79] - 2026-10-09
 
 ### Changed

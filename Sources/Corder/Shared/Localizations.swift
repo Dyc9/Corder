@@ -16,6 +16,10 @@ enum L {
         "record_start_failed": "Could not start recording",
         "record_save_failed": "Could not save the recording",
         "record_low_disk": "Not enough disk space ({mb} MB free). Free up space first; the recording was not started so it cannot be lost when the disk fills up.",
+        // Audio import (drag and drop onto the Library window)
+        "import_unsupported": "Only audio and video files can be transcribed",
+        "import_failed": "Could not read this file. Try an mp3, m4a or wav.",
+        "import_low_disk": "Not enough disk space to import this file",
         // Menu-bar popover
         "idle": "Not recording",
         "recording": "Recording",
@@ -82,6 +86,9 @@ enum L {
         "record_start_failed": "Не удалось начать запись",
         "record_save_failed": "Не удалось сохранить запись",
         "record_low_disk": "Мало места на диске ({mb} МБ). Освободи место, запись не начата, чтобы не потерять её при заполнении диска.",
+        "import_unsupported": "Расшифровать можно только аудио и видео",
+        "import_failed": "Не удалось прочитать файл. Попробуй mp3, m4a или wav.",
+        "import_low_disk": "Мало места на диске для этого файла",
         "idle": "Запись не идёт",
         "recording": "Идёт запись",
         "saving": "Сохраняем…",

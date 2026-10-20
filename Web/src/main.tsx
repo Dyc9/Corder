@@ -9,6 +9,7 @@ import { UpdateModalHost } from "./components/UpdateModal";
 import { SignInModalHost } from "./components/SignInModal";
 import { MainHeader } from "./components/MainHeader";
 import { ResizeHandle } from "./components/ResizeHandle";
+import { DropOverlay } from "./components/DropOverlay";
 import { Lang, T, pickStrings } from "./i18n";
 import { initTheme } from "./theme";
 
@@ -255,6 +256,20 @@ function App() {
     };
     window.addEventListener("corder-recording-started", onStarted);
     return () => window.removeEventListener("corder-recording-started", onStarted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // A file dropped on the window becomes a new session (native
+  // AudioImporter); jump into it right away, like a fresh recording.
+  React.useEffect(() => {
+    const onOpen = (e: Event) => {
+      const id = ((e as CustomEvent).detail as { id?: string } | null)?.id;
+      if (!id) return;
+      setActiveId(id);
+      refresh();
+    };
+    window.addEventListener("corder-open-meeting", onOpen);
+    return () => window.removeEventListener("corder-open-meeting", onOpen);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -703,6 +718,7 @@ function App() {
         })()}
       </main>
       {toast && <Toast toast={toast} leaving={toastLeaving} onDismiss={dismissToast} />}
+      <DropOverlay t={t} />
       {/* Sparkle update modal, rendered into the same WebView so a
           `position: fixed; inset: 0` overlay covers the whole Library,
           not a fragment-sized child window. */}
