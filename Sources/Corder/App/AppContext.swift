@@ -20,6 +20,11 @@ final class AppContext: ObservableObject {
     @Published var recordingState: RecordingState = .idle {
         didSet { RecordingStateSnapshot.update(recordingState) }
     }
+    /// True while `RecordingController.startRecording` is bringing capture
+    /// up. A Bluetooth headset mic takes ~3 s to switch to its call profile,
+    /// so the popover shows "Starting recording…" and further Start clicks
+    /// are ignored instead of queueing a Stop.
+    @Published var recordingStarting = false
 
     /// Sparkle-reported version string of the newest pending update,
     /// e.g. "0.8.0". `nil` means no update is available right now. The

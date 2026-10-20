@@ -615,7 +615,10 @@ final class CaptureEngine: NSObject {
                 FileLogger.log("CaptureEngine.start: forcing built-in mic '\(builtIn.name)' after \(attempt - 1) failed attempt(s) on the default input")
                 try? await Task.sleep(nanoseconds: 200_000_000)   // let it bind
             }
-            let fmt = inputNode.outputFormat(forBus: 0)
+            // Off the main thread: on a Bluetooth headset this call blocks
+            // ~3 s while the headset switches to its call (HFP) profile, which
+            // froze the menu-bar popover.
+            let fmt = await Self.offMain { inputNode.outputFormat(forBus: 0) }
             // 0 Hz / 0 ch = device not bound yet. Don't even try to open a
             // file with a bogus format (that's what throws -10868), wait.
             guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
@@ -638,8 +641,10 @@ final class CaptureEngine: NSObject {
                 // config-change handler can RE-tap the (possibly new) device
                 // mid-recording without duplicating the padding/write path.
                 installMicTap(on: inputNode)
-                engine.prepare()
-                try engine.start()
+                try await Self.offMain {
+                    engine.prepare()
+                    try engine.start()
+                }
                 self.audioEngine = engine
                 micStarted = true
                 FileLogger.log("CaptureEngine.start: mic via AVAudioEngine; format \(fmt.sampleRate) Hz, \(fmt.channelCount) ch\(attempt > 1 ? " (started on retry \(attempt))" : "")")
@@ -1308,5 +1313,32 @@ extension CaptureEngine: SCStreamDelegate {
             guard let self = self else { return }
             self.delegate?.captureEngine(self, didFailWithError: error)
         }
+    }
+}
+
+/// Carries a non-`Sendable` value across the hop in `CaptureEngine.offMain`.
+private struct UncheckedTransfer<T>: @unchecked Sendable { let value: T }
+
+extension CaptureEngine {
+    /// Runs a blocking Core Audio call on a background thread. The engine is
+    /// only touched by the start path while this runs, so handing it across
+    /// threads is safe even though AVFoundation types are not `Sendable`.
+    nonisolated static func offMain<T>(_ work: @escaping () throws -> T) async throws -> T {
+        let job = UncheckedTransfer(value: work)
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UncheckedTransfer<T>, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do { cont.resume(returning: UncheckedTransfer(value: try job.value())) }
+                catch { cont.resume(throwing: error) }
+            }
+        }.value
+    }
+
+    nonisolated static func offMain<T>(_ work: @escaping () -> T) async -> T {
+        let job = UncheckedTransfer(value: work)
+        return await withCheckedContinuation { (cont: CheckedContinuation<UncheckedTransfer<T>, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: UncheckedTransfer(value: job.value()))
+            }
+        }.value
     }
 }

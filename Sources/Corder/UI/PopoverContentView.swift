@@ -78,11 +78,17 @@ struct PopoverContentView: View {
                 }
             } label: {
                 HStack(spacing: 8) {
-                    Circle().fill(Color.red).frame(width: 8, height: 8)
-                    Text(L.t("start", lang: ctx.language))
+                    if ctx.recordingStarting {
+                        ProgressView().controlSize(.small)
+                        Text(L.t("starting_recording", lang: ctx.language))
+                    } else {
+                        Circle().fill(Color.red).frame(width: 8, height: 8)
+                        Text(L.t("start", lang: ctx.language))
+                    }
                 }
             }
             .buttonStyle(FlatButtonStyle(role: .primary))
+            .disabled(ctx.recordingStarting)
             .keyboardShortcut("r", modifiers: [.command])
         }
     }

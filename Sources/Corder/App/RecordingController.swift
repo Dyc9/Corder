@@ -39,6 +39,10 @@ final class RecordingController {
             FileLogger.log("startRecording: ignored, state is not idle")
             return
         }
+        guard !AppContext.shared.recordingStarting else {
+            FileLogger.log("startRecording: ignored, a start is already in progress")
+            return
+        }
         // Guest session cap. A signed-out user may HOLD at most
         // `guestSessionLimit` sessions at once; at the cap, Start always
         // offers sign-in instead of recording. This funnels every entry
@@ -100,6 +104,8 @@ final class RecordingController {
         )
         meeting.expectedOtherSpeakers = expectedOtherSpeakers
 
+        AppContext.shared.recordingStarting = true
+        defer { AppContext.shared.recordingStarting = false }
         do {
             try AppContext.shared.repo.insertMeeting(meeting)
             // Earlier we showed a "Starting recording…" spinner inside

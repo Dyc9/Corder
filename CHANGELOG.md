@@ -16,6 +16,12 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.82] - 2026-10-20
+
+### Fixed
+
+- Start recording no longer freezes the menu for about three seconds with Bluetooth headphones. The menu now says "Starting recording…" while the headset switches its microphone on, and a second click in that moment no longer stops the recording it just started.
+
 ## [0.15.81] - 2026-10-20
 
 ### Changed
