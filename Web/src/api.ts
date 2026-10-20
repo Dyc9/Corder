@@ -63,6 +63,8 @@ export interface MeetingDetail {
   transcribing_started_at?: number | null;
   /// Real transcription progress 0…1 while transcribing; null otherwise.
   transcribe_progress?: number | null;
+  /// Pipeline step while transcribing: audio | transcribing | checking | polishing | speakers | saving.
+  transcribe_stage?: string | null;
   model_download_progress?: number | null;
   /// True during the silent post-download "preparing" phase (tokenizer
   /// staging + one-time ANE compile). Progress is pinned at 0.99 then, so

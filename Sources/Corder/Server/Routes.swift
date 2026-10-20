@@ -719,6 +719,8 @@ enum Routes {
                 transcribing_started_at: m.transcribingStartedAt,
                 transcribe_progress: m.status == .transcribing
                     ? TranscriptionProgressStore.read(meetingId: id) : nil,
+                transcribe_stage: m.status == .transcribing
+                    ? TranscriptionProgressStore.readStage(meetingId: id)?.rawValue : nil,
                 // Surface the on-device model download while a transcription
                 // waits on it (new free-tier user, ~1.5 GB first fetch). Gated
                 // on the LIVE load flags, NOT on AppSettings.transcriptionProvider:

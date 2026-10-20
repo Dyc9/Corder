@@ -54,6 +54,9 @@ enum DTO {
         /// REAL transcription progress 0…1 while `status == "transcribing"`,
         /// fed by the local ASR window-by-window. `nil` when not in flight.
         let transcribe_progress: Double?
+        /// Pipeline step behind the progress bar while transcribing
+        /// (`TranscriptionStage` raw value), drives the banner headline.
+        let transcribe_stage: String?
         /// On-device model download progress 0…1 while `status ==
         /// "transcribing"` BUT the local Whisper model is still fetching
         /// (~1.5 GB, first run on a new free-tier Mac). `nil` when the model

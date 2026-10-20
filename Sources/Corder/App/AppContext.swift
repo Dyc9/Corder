@@ -820,9 +820,27 @@ enum TranscriptionErrors {
 /// Swifter handlers read off background threads). Monotonic on the write
 /// side (`set` ignores a value lower than the current one) so the bar
 /// never visibly steps backward.
+/// What the pipeline is doing right now, shown as the banner headline
+/// ("Preparing audio", "Identifying speakers", ...) so a long step that is
+/// not speech recognition doesn't read as "Transcribing". Raw values go to
+/// the page as `transcribe_stage`.
+enum TranscriptionStage: String {
+    case audio, transcribing, checking, polishing, speakers, saving
+}
+
 enum TranscriptionProgressStore {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var byMeeting: [String: Double] = [:]
+    nonisolated(unsafe) private static var stageByMeeting: [String: TranscriptionStage] = [:]
+
+    static func setStage(meetingId: String, _ stage: TranscriptionStage) {
+        lock.lock(); defer { lock.unlock() }
+        stageByMeeting[meetingId] = stage
+    }
+    static func readStage(meetingId: String) -> TranscriptionStage? {
+        lock.lock(); defer { lock.unlock() }
+        return stageByMeeting[meetingId]
+    }
 
     static func set(meetingId: String, fraction: Double) {
         let f = max(0, min(1, fraction))
@@ -835,10 +853,12 @@ enum TranscriptionProgressStore {
     static func begin(meetingId: String) {
         lock.lock(); defer { lock.unlock() }
         byMeeting[meetingId] = 0
+        stageByMeeting[meetingId] = .audio
     }
     static func clear(meetingId: String) {
         lock.lock(); defer { lock.unlock() }
         byMeeting.removeValue(forKey: meetingId)
+        stageByMeeting.removeValue(forKey: meetingId)
     }
     static func read(meetingId: String) -> Double? {
         lock.lock(); defer { lock.unlock() }

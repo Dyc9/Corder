@@ -16,6 +16,16 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.81] - 2026-10-20
+
+### Changed
+
+- While a recording is processed, the card says what is happening right now: preparing audio, transcribing, checking for missed words, cleaning up the text, identifying speakers or saving the transcript, instead of "Transcribing" the whole time.
+
+### Fixed
+
+- The position knob on the player timeline has a white ring in the dark theme too, instead of a dark one.
+
 ## [0.15.80] - 2026-10-20
 
 ### Added

@@ -92,6 +92,9 @@ enum AudioImporter {
             try? FileManager.default.removeItem(at: dir)
             return
         }
+        // The banner reads "Preparing audio" while the file decodes; the
+        // pipeline takes the stage over once it starts.
+        TranscriptionProgressStore.setStage(meetingId: id, .audio)
         LibraryWindow.shared.openMeeting(id)
         FileLogger.log("AudioImporter: importing \(source.lastPathComponent) as \(id)")
 
@@ -102,6 +105,7 @@ enum AudioImporter {
             }.value
         } catch {
             FileLogger.log("AudioImporter: decode failed for \(source.lastPathComponent): \(error)")
+            TranscriptionProgressStore.clear(meetingId: id)
             try? AppContext.shared.repo.deleteMeeting(id: id)
             try? FileManager.default.removeItem(at: dir)
             LibraryWindow.shared.postToast(title: L.notif("import_failed"), body: "", kind: "error")

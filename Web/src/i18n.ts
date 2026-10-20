@@ -268,6 +268,11 @@ interface Strings {
   rec_label: string;
   rec_stop: string;
   trans_label: string;
+  trans_stage_audio: string;
+  trans_stage_checking: string;
+  trans_stage_polishing: string;
+  trans_stage_speakers: string;
+  trans_stage_saving: string;
   trans_downloading_model?: string;
   /// Headline for the silent post-download compile phase.
   trans_preparing_model?: string;
@@ -681,6 +686,11 @@ const en: Strings = {
   rec_label: "Recording",
   rec_stop: "Stop recording",
   trans_label: "Transcribing",
+  trans_stage_audio: "Preparing audio",
+  trans_stage_checking: "Checking for missed words",
+  trans_stage_polishing: "Cleaning up the text",
+  trans_stage_speakers: "Identifying speakers",
+  trans_stage_saving: "Saving the transcript",
   trans_downloading_model: "Downloading model…",
   trans_preparing_model: "Preparing model…",
   trans_start_new: "Start a new recording",

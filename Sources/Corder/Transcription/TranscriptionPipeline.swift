@@ -635,6 +635,7 @@ final class TranscriptionPipeline {
                         // Combine the two concurrent tracks' real per-window
                         // progress into one 0…0.9 fraction (last 10% is the
                         // diarization/mapping stage below). Monotonic.
+                        TranscriptionProgressStore.setStage(meetingId: meetingId, .transcribing)
                         let agg = ProgressAggregator(meetingId: meetingId)
                         async let micPart = WhisperTranscriber.$languageTally.withValue(micTally) {
                             try await geminiRawTurns(wavURL: micTranscribeURL, meetingId: meetingId,
@@ -676,6 +677,7 @@ final class TranscriptionPipeline {
                     // of another (= drift) is re-transcribed forced to it. A
                     // track genuinely in another language (its majority differs)
                     // is left alone.
+                    TranscriptionProgressStore.setStage(meetingId: meetingId, .checking)
                     var meetingLang: String? = nil
                     if currentProvider != .gemini {
                         let meetingName = WhisperTranscriber.LanguageTally
@@ -718,6 +720,7 @@ final class TranscriptionPipeline {
                         // High-quality (gpt-4o) polish only on a MANUAL
                         // Re-transcribe (forceFresh); the first/auto pass uses
                         // the cheap model to keep the default path near-free.
+                        TranscriptionProgressStore.setStage(meetingId: meetingId, .polishing)
                         rawUserTurns = await WhisperCleanup.polish(rawUserTurns, language: lang, highQuality: forceFresh)
                         rawOtherTurns = await WhisperCleanup.polish(rawOtherTurns, language: lang, highQuality: forceFresh)
                     }
@@ -734,6 +737,7 @@ final class TranscriptionPipeline {
                     // in-person recording (one mic, everyone in the room) had
                     // no tally and no rescue — a real Russian meeting came
                     // back half-TRANSLATED into English (2026-09-08 report).
+                    TranscriptionProgressStore.setStage(meetingId: meetingId, .transcribing)
                     let micTally = WhisperTranscriber.LanguageTally()
                     rawOtherTurns = try await WhisperTranscriber.$languageTally.withValue(micTally) {
                         // Same 0.9 ceiling as the dual-track ProgressAggregator; the
@@ -743,6 +747,7 @@ final class TranscriptionPipeline {
                         })
                     }
                     rawUserTurns = []
+                    TranscriptionProgressStore.setStage(meetingId: meetingId, .checking)
                     var meetingLang: String? = nil
                     if currentProvider != .gemini {
                         let snapshot = micTally.snapshot()
@@ -763,11 +768,13 @@ final class TranscriptionPipeline {
                         // Detected meeting language, NOT the English-only UI
                         // default, or polish re-introduces the drift.
                         let lang = AppSettings.transcriptionLanguage.nilIfEmpty ?? meetingLang ?? AppLanguage.current
+                        TranscriptionProgressStore.setStage(meetingId: meetingId, .polishing)
                         rawOtherTurns = await WhisperCleanup.polish(
                             rawOtherTurns, language: lang, highQuality: forceFresh)
                     }
                 }
             } else {
+                TranscriptionProgressStore.setStage(meetingId: meetingId, .transcribing)
                 FileLogger.log("transcribe(): legacy single-stream (no mic+system on disk), falling back to mix")
                 switch currentProvider {
                 case .gemini:
@@ -796,6 +803,7 @@ final class TranscriptionPipeline {
                     // speakers in one numbered block which the editor
                     // model handles fine (it's not asked to attribute,
                     // only to fix punctuation / typos line by line).
+                    TranscriptionProgressStore.setStage(meetingId: meetingId, .polishing)
                     legacyTurns = await WhisperCleanup.polish(
                         legacyTurns,
                         language: AppSettings.transcriptionLanguage.nilIfEmpty ?? AppLanguage.current)
@@ -864,6 +872,7 @@ final class TranscriptionPipeline {
             // this and uses legacyTurns as-is.
             var userTurns: [GeminiTranscriber.Turn] = []
             var otherTurns: [GeminiTranscriber.Turn] = []
+            TranscriptionProgressStore.setStage(meetingId: meetingId, .speakers)
             if usingDualTrack {
                 let roomSize = meeting.expectedOtherSpeakers.map { $0 + 1 }
                 // Immutable copy, captured by the parallel `async let`s
@@ -982,6 +991,7 @@ final class TranscriptionPipeline {
                 return
             }
 
+            TranscriptionProgressStore.setStage(meetingId: meetingId, .saving)
             // 3. Map turns → speakers + segments.
             let chosenUserLabel: String?
             // stampNow=false on a cache hit: don't refresh transcribedAt /

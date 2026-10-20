@@ -59,6 +59,8 @@ interface Props {
   /// stream per-window callbacks), we then render an empty fill and
   /// rely on the spinner + elapsed counter for the "moving" signal.
   progress: number | null;
+  /// Pipeline step (`MeetingDetail.transcribe_stage`), picks the headline.
+  stage: string | null;
   /// On-device model download progress in [0, 1] while a transcription is
   /// waiting on the ~1.5 GB local model to fetch (new free-tier Mac).
   /// When set, the banner shows a "Downloading model" state and the fill
@@ -131,6 +133,19 @@ function resolveUpsell(s: Settings | null, u: Usage | null): UpsellKind {
   return null;
 }
 
+/// Headline for the current pipeline step. Unknown or missing (an older
+/// backend, the first poll) reads as plain "Transcribing".
+function stageLabel(stage: string | null, t: T): string {
+  switch (stage) {
+    case "audio": return t.trans_stage_audio;
+    case "checking": return t.trans_stage_checking;
+    case "polishing": return t.trans_stage_polishing;
+    case "speakers": return t.trans_stage_speakers;
+    case "saving": return t.trans_stage_saving;
+    default: return t.trans_label;
+  }
+}
+
 /// "Transcribing…" card. Shares the EXACT same shell as every other
 /// status / empty / clarify banner in the product
 /// `.trans-banner.clarify-banner` + `.clarify-text` (body + sub) +
@@ -138,7 +153,7 @@ function resolveUpsell(s: Settings | null, u: Usage | null): UpsellKind {
 /// between recording / transcribing / failed / empty states. The
 /// spinner sits inline next to the headline so the "this is moving"
 /// signal is part of the title, not a separate row that grows the card.
-export function TranscribingBanner({ meetingId, startedAtMs, progress, modelDownloadProgress, modelPreparing, onCancelled, onToast, t }: Props) {
+export function TranscribingBanner({ meetingId, startedAtMs, progress, stage, modelDownloadProgress, modelPreparing, onCancelled, onToast, t }: Props) {
   // When the on-device model is still downloading, the banner reads
   // "Downloading model" and the fill tracks the download; once the model
   // lands, modelDownloadProgress goes null and we fall back to the real
@@ -161,7 +176,7 @@ export function TranscribingBanner({ meetingId, startedAtMs, progress, modelDown
     ? (preparing
         ? (t.trans_preparing_model ?? "Preparing model…")
         : (t.trans_downloading_model ?? "Downloading model…"))
-    : t.trans_label;
+    : stageLabel(stage, t);
   // Backend mark when the pipeline went into .transcribing. Falling
   // back to Date.now() for legacy rows that don't carry the field
   // keeps the timer monotonic rather than negative.
