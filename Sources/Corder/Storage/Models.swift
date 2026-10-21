@@ -73,6 +73,9 @@ struct Meeting: Codable, FetchableRecord, PersistableRecord {
     /// team"). nil = the folder is still the plain `<id>` (the fallback
     /// `AppPaths.recordingDir` resolves to). Set when the auto-title lands.
     var dirName: String? = nil
+    /// nil = recorded; "import" = dropped file; "mcp" = handed over by an
+    /// AI assistant (see migration v24_source).
+    var source: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -100,6 +103,7 @@ struct Meeting: Codable, FetchableRecord, PersistableRecord {
         case chapters
         case transcribeAttempts = "transcribe_attempts"
         case dirName = "dir_name"
+        case source
     }
 }
 

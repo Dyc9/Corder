@@ -13,6 +13,9 @@ export interface MeetingSummary {
   speaker_count: number;
   /** "Speaker 2 · Влад" etc., joined names of who actually spoke. */
   speaker_names?: string;
+  /** null = recorded in Corder; "import" = dropped file; "mcp" = a file an
+   *  AI assistant handed over. Drives the blue ready dot in the sidebar. */
+  source?: "import" | "mcp" | null;
   /** Pinned sessions sort to a group at the very top with a gold title. */
   pinned?: boolean;
   /** False = the user hasn't opened this meeting yet; drives the

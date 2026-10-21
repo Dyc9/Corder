@@ -270,8 +270,11 @@ export function Sidebar({ meetings, loaded, activeId, playingId, query, onQueryC
                   + ((m.id === activeId || selectedIds.has(m.id)) ? " active" : "")
                   + (m.status === "failed" ? " failed" : "")
                   + (m.pinned ? " pinned" : "")
-                  + (m.viewed === false && m.status === "ready" ? " unseen" : "")}
-                title={formatExactDate(m.started_at)}
+                  + (m.viewed === false && m.status === "ready" ? " unseen" : "")
+                  + (m.source ? " external" : "")}
+                title={formatExactDate(m.started_at)
+                  + (m.source === "mcp" ? ` · ${t.sidebar_source_mcp ?? "Transcribed from a file by an AI assistant"}`
+                    : m.source === "import" ? ` · ${t.sidebar_source_import ?? "Transcribed from a file"}` : "")}
                 onClick={(e) => handleSelect(e, m.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();

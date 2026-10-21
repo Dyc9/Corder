@@ -668,7 +668,8 @@ enum Routes {
                     speaker_count: r.speakerCount,
                     speaker_names: r.speakerNames,
                     pinned: r.pinnedAt != nil,
-                    viewed: r.viewedAt != nil
+                    viewed: r.viewedAt != nil,
+                    source: r.source
                 )
             }
             return jsonResponse(summaries)

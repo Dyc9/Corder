@@ -33,6 +33,8 @@
   --speaker-4: #1a4f8a;
   --danger: #b8443c;
   --status-ready: #1f7a4f;
+  /* Ready dot for a session transcribed from a file (drop / AI assistant). */
+  --status-external: #2563eb;
   --status-warn: #b07b1a;
   --status-fail: #b8443c;
   /* Recessed timeline channel, overridden in dark. */
@@ -67,6 +69,7 @@
   --speaker-4: #6fa6e0;
   --danger: #e0655c;
   --status-ready: #46c08a;
+  --status-external: #4b8ef5;
   --status-warn: #d6a445;
   --status-fail: #e0655c;
   --tl-track: rgba(255, 255, 255, 0.08);
@@ -1397,6 +1400,12 @@ input[type="search"]::-webkit-search-decoration {
    green doesn't muddy under the page background. */
 .meeting-item.unseen .meeting-title { color: var(--accent); font-weight: 600; }
 .dark .meeting-item.unseen .meeting-title { color: #38b76a; }
+/* Session transcribed from a file (dropped on the Library or handed over by
+   an AI assistant): the ready dot is blue instead of green, so it reads
+   apart from recordings at a glance. Same specificity as the pinned rules
+   below and listed before them, so a pinned import still shows gold. */
+.meeting-item.external .status-dot.ready { background: var(--status-external); }
+
 /* Pinned session: the existing status dot itself goes gold instead of
    its normal green/red/amber. One indicator, not two, the dot is
    already in the meta row, so reuse it rather than adding a second

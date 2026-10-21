@@ -80,6 +80,9 @@ interface Strings {
   settings_recordings_folder_desc?: string;
   /// "AI assistants" row: the command that connects Claude Code over MCP.
   settings_mcp_title?: string;
+  /// Sidebar row tooltip suffix for sessions transcribed from a file.
+  sidebar_source_import?: string;
+  sidebar_source_mcp?: string;
   settings_mcp_desc?: string;
   settings_mcp_copy?: string;
   settings_mcp_copied?: string;
@@ -507,6 +510,8 @@ const en: Strings = {
   settings_recordings_folder_open: "Open",
   settings_recordings_folder_desc: "Open the folder with all your recordings in Finder.",
   settings_mcp_title: "AI assistants",
+  sidebar_source_import: "Transcribed from a file",
+  sidebar_source_mcp: "Transcribed from a file by an AI assistant",
   settings_mcp_desc: "Let Claude transcribe audio files on this Mac, save them here and read your sessions. Run this command once in Terminal, then restart Claude.",
   settings_mcp_copy: "Copy command",
   settings_mcp_copied: "Copied",

@@ -125,6 +125,7 @@ enum AudioImporter {
             audioPath: micURL.path,
             status: .transcribing
         )
+        meeting.source = options.interactive ? "import" : "mcp"
         // Insert first so the row shows up (with its loader) while the file
         // is still decoding; a long file can take a few seconds.
         do {

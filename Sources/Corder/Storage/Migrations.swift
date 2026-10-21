@@ -251,6 +251,14 @@ enum Migrations {
             try db.execute(sql: "ALTER TABLE meetings ADD COLUMN dir_name TEXT;")
         }
 
+        // Where a session came from: NULL = recorded by Corder, "import" =
+        // a file dropped on the Library, "mcp" = a file an AI assistant
+        // handed over (MCPTools.transcribe_audio). The sidebar marks the
+        // last two so they read apart from recordings.
+        m.registerMigration("v24_source") { db in
+            try db.execute(sql: "ALTER TABLE meetings ADD COLUMN source TEXT;")
+        }
+
         return m
     }
 }

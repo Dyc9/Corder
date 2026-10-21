@@ -93,6 +93,7 @@ struct MeetingRepository {
         let speakerNames: String?
         let pinnedAt: Int64?
         let viewedAt: Int64?
+        let source: String?
     }
 
     func listMeetingSummaries() throws -> [SummaryRow] {
@@ -107,6 +108,7 @@ struct MeetingRepository {
                     m.title,
                     m.pinned_at,
                     m.viewed_at,
+                    m.source,
                     (SELECT s.text
                        FROM segments s
                        WHERE s.meeting_id = m.id
@@ -143,7 +145,8 @@ struct MeetingRepository {
                     speakerCount: r["speaker_count"] ?? 0,
                     speakerNames: r["speaker_names"],
                     pinnedAt: r["pinned_at"],
-                    viewedAt: r["viewed_at"]
+                    viewedAt: r["viewed_at"],
+                    source: r["source"]
                 )
             }
         }

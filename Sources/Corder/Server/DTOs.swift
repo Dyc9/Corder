@@ -18,6 +18,8 @@ enum DTO {
         /// `false` = the user hasn't opened this meeting yet. Drives the
         /// "unseen" accent on the title in the sidebar + Recent.
         let viewed: Bool
+        /// nil = recorded in Corder, "import" / "mcp" = transcribed from a file.
+        let source: String?
     }
 
     struct MeetingDetail: Codable {

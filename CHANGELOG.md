@@ -16,6 +16,12 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.90] - 2026-10-21
+
+### Changed
+
+- Sessions transcribed from a file, dropped on the window or handed over by an AI assistant, now have a blue dot in the list instead of a green one, so you can tell them apart from your recordings. Hover a session to see where it came from.
+
 ## [0.15.89] - 2026-10-21
 
 ### Added
