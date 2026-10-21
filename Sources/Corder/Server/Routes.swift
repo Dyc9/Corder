@@ -1143,9 +1143,8 @@ enum Routes {
 
     /// Last `maxLines` of `/tmp/corder.log`.
     private static func readLogTail(maxLines: Int) -> [String] {
-        let path = "/tmp/corder.log"
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let full = String(data: data, encoding: .utf8) else { return [] }
+        let full = FileLogger.tail()
+        guard !full.isEmpty else { return [] }
         let lines = full.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         return Array(lines.suffix(maxLines))
     }
@@ -1631,23 +1630,22 @@ enum Routes {
         let spks = (try? repo.speakers(forMeeting: id)) ?? []
         let text = TranscriptFormatter.clipboardText(segments: segs, speakers: spks)
 
-        let sema = DispatchSemaphore(value: 0)
-        var result: String?
-        var tierGated = false
-        Task {
-            // Joins the pipeline's auto-summary if it is still running for
-            // this meeting (the row flips to ready a few seconds before the
-            // recap lands, which is exactly when the user clicks Generate).
+        // Joins the pipeline's auto-summary if it is still running for
+        // this meeting (the row flips to ready a few seconds before the
+        // recap lands, which is exactly when the user clicks Generate).
+        let outcome: GatedOutcome<String> = awaitBlocking(timeout: 240, label: "summary \(id)") {
             do {
-                result = try await DerivedContentJobs.shared.run("summary:\(id)") {
+                let r = try await DerivedContentJobs.shared.run("summary:\(id)") {
                     try await GeminiSummarizer.generate(transcript: text)
                 }
+                return .value(r)
             }
-            catch is PaidFeatureError { tierGated = true }
-            catch { }
-            sema.signal()
-        }
-        sema.wait()
+            catch is PaidFeatureError { return .tierGated }
+            catch { return .value(nil) }
+        } ?? .value(nil)
+        var result: String?
+        var tierGated = false
+        switch outcome { case .value(let v): result = v; case .tierGated: tierGated = true }
 
         // A 403 tier-gate must surface as a real 403 so the frontend shows the
         // Upgrade upsell (api.ts throws "HTTP 403", SummaryPane keys off it),
@@ -1685,21 +1683,20 @@ enum Routes {
             (startMs: Int64($0.startMs), text: $0.text)
         }
         let durationMs = m.durationMs ?? segs.last?.endMs
-        let sema = DispatchSemaphore(value: 0)
-        var result: [GeminiChapters.Chapter]?
-        var tierGated = false
-        Task {
-            // Same in-flight sharing as summarize(): one run per meeting.
+        // Same in-flight sharing as summarize(): one run per meeting.
+        let outcome: GatedOutcome<[GeminiChapters.Chapter]> = awaitBlocking(timeout: 240, label: "chapters \(id)") {
             do {
-                result = try await DerivedContentJobs.shared.run("chapters:\(id)") {
+                let r = try await DerivedContentJobs.shared.run("chapters:\(id)") {
                     try await GeminiChapters.generate(timedLines: timed, durationMs: durationMs)
                 }
+                return .value(r)
             }
-            catch is PaidFeatureError { tierGated = true }
-            catch { }
-            sema.signal()
-        }
-        sema.wait()
+            catch is PaidFeatureError { return .tierGated }
+            catch { return .value(nil) }
+        } ?? .value(nil)
+        var result: [GeminiChapters.Chapter]?
+        var tierGated = false
+        switch outcome { case .value(let v): result = v; case .tierGated: tierGated = true }
         // Real 403 on a tier-gate so the upsell fires (see summarize()).
         if tierGated { return tierGatedResponse("chapters") }
         guard let chapters = result, !chapters.isEmpty,
@@ -1984,15 +1981,11 @@ enum Routes {
         let spks = (try? repo.speakers(forMeeting: id)) ?? []
         let text = TranscriptFormatter.clipboardText(segments: segs, speakers: spks)
 
-        let sema = DispatchSemaphore(value: 0)
-        var title: String?
-        Task {
-            title = await GeminiTitler.generate(
+        let title: String? = awaitBlocking(timeout: 120, label: "retitle \(id)") {
+            await GeminiTitler.generate(
                 transcript: text,
                 languageISO: AppSettings.transcriptionLanguage.nilIfEmpty)
-            sema.signal()
-        }
-        sema.wait()
+        } ?? nil
 
         guard let title, !title.isEmpty else {
             return jsonResponse(["title": "", "error": "generation failed"])
@@ -2085,17 +2078,15 @@ enum Routes {
                     let sysURL: URL? = fm.fileExists(atPath: tapURL.path) ? tapURL
                         : (fm.fileExists(atPath: sckURL.path) ? sckURL : nil)
                     if fm.fileExists(atPath: micURL.path) {
-                        let sema = DispatchSemaphore(value: 0)
-                        Task {
+                        _ = awaitBlocking(timeout: 180, label: "on-demand mix \(id)") { () -> Bool? in
                             do {
                                 try await AudioMixer.produceWhisperInput(
                                     systemURL: sysURL, micURL: micURL, outputURL: mixURL)
                             } catch {
                                 FileLogger.log("serveMedia: on-demand mix failed for \(id): \(error)")
                             }
-                            sema.signal()
+                            return true
                         }
-                        sema.wait()
                     }
                     if fm.fileExists(atPath: mixURL.path) {
                         FileLogger.log("serveMedia: built playback mix on demand for \(id)")
@@ -2284,19 +2275,15 @@ enum Routes {
     /// its own `URLSession.data` round-trip and hammered Dropbox's
     /// rate limit.
     private static func hydrateDropboxFile(remote: String, localURL: URL) -> Bool {
-        let semaphore = DispatchSemaphore(value: 0)
-        var ok = false
-        Task.detached {
-            defer { semaphore.signal() }
+        awaitBlocking(timeout: 900, label: "Dropbox hydrate \(localURL.lastPathComponent)") { () -> Bool? in
             do {
                 try await DropboxService.shared.download(remotePath: remote, to: localURL)
-                ok = true
+                return true
             } catch {
                 FileLogger.log("hydrateDropboxFile: \(remote) → \(localURL.lastPathComponent) failed: \(error)")
+                return false
             }
-        }
-        semaphore.wait()
-        return ok
+        } ?? false
     }
 
     /// Pull a meeting's mix audio from Supabase Storage to the local
@@ -2307,13 +2294,10 @@ enum Routes {
     /// then the regular Range branch serves the file. Returns false
     /// on any failure (missing object, not signed in, network).
     private static func hydrateSupabaseAudio(meetingId: String, localURL: URL) -> Bool {
-        let semaphore = DispatchSemaphore(value: 0)
-        var ok = false
-        Task.detached { @MainActor in
-            defer { semaphore.signal() }
+        awaitBlocking(timeout: 600, label: "Supabase hydrate \(meetingId)") { () -> Bool? in
             guard let uid = SupabaseClientHolder.shared.auth.currentUser?.id else {
                 FileLogger.log("hydrateSupabaseAudio: not signed in")
-                return
+                return false
             }
             do {
                 try FileManager.default.createDirectory(
@@ -2328,18 +2312,52 @@ enum Routes {
                 let data = try await SupabaseClientHolder.shared.storage
                     .from("recordings")
                     .download(path: key)
-                try data.write(to: localURL)
-                ok = true
+                // Atomic: a torn write would leave a short audio.wav that the
+                // "file exists" checks then serve forever. Off the main
+                // thread (this used to hop to MainActor for the write).
+                try data.write(to: localURL, options: .atomic)
                 FileLogger.log("hydrateSupabaseAudio: pulled \(key) (\(data.count) bytes)")
+                return true
             } catch {
                 FileLogger.log("hydrateSupabaseAudio: \(meetingId) failed, \(error)")
+                return false
             }
-        }
-        semaphore.wait()
-        return ok
+        } ?? false
     }
 
     // MARK: helpers
+
+    enum GatedOutcome<T> { case value(T?), tierGated }
+
+    final class BlockingBox<T>: @unchecked Sendable {
+        let lock = NSLock()
+        var value: T?
+    }
+
+    /// Swifter handlers are synchronous; this runs `work` on the concurrency
+    /// pool and waits at most `timeout` seconds. A bare `sema.wait()` held the
+    /// worker (and its keep-alive connection) forever when a network call
+    /// hung, and WKWebView has only a few connections per host, so a couple
+    /// of stuck requests froze the whole Library. Returns nil on timeout
+    /// (the work is cancelled). The result is handed over under a lock, so a
+    /// late finish after the timeout can't race the caller.
+    static func awaitBlocking<T>(timeout: Double, label: String,
+                                 _ work: @escaping @Sendable () async -> T?) -> T? {
+        let box = BlockingBox<T>()
+        let sema = DispatchSemaphore(value: 0)
+        let task = Task.detached {
+            let v = await work()
+            box.lock.lock(); box.value = v; box.lock.unlock()
+            sema.signal()
+        }
+        if sema.wait(timeout: .now() + timeout) == .timedOut {
+            task.cancel()
+            FileLogger.log("Routes: \(label) still running after \(Int(timeout)) s, giving up on this request")
+            return nil
+        }
+        box.lock.lock(); defer { box.lock.unlock() }
+        return box.value
+    }
 
     /// HTTP 403 envelope for a paid-feature tier-gate. The frontend's
     /// `api.ts` throws `HTTP 403` on `!r.ok`, which the Summary/Chapters

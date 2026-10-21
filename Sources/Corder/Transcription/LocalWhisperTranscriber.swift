@@ -231,7 +231,18 @@ enum LocalWhisperTranscriber {
         inflightLock.lock()
         if let v = value { inflightProgress[variant.rawValue] = v }
         else { inflightProgress.removeValue(forKey: variant.rawValue) }
+        // Any download/load transition can change what is on disk.
+        filesCompleteCache.removeValue(forKey: variant.rawValue)
         inflightLock.unlock()
+    }
+
+    /// `modelFilesComplete` walks the whole model tree; /api/settings asks
+    /// for it twice per request and the Library polls settings, so the
+    /// answer is kept for a few seconds (and dropped on every progress
+    /// change above, and when the model folder is wiped).
+    nonisolated(unsafe) private static var filesCompleteCache: [String: (value: Bool, at: Date)] = [:]
+    nonisolated static func invalidateModelFilesCache() {
+        inflightLock.lock(); filesCompleteCache.removeAll(); inflightLock.unlock()
     }
     /// Mark/unmark the silent post-download "preparing" (tokenizer staging +
     /// ANE compile) phase. Paired with the 0.99 progress pin at the two call
@@ -280,6 +291,18 @@ enum LocalWhisperTranscriber {
     /// compile AFTER the download finished, so a transcribe that arrives
     /// during the compile must not read it as "files missing".
     nonisolated static func modelFilesComplete(_ variant: Variant) -> Bool {
+        inflightLock.lock()
+        let cached = filesCompleteCache[variant.rawValue]
+        inflightLock.unlock()
+        if let cached, Date().timeIntervalSince(cached.at) < 5 { return cached.value }
+        let value = scanModelFiles(variant)
+        inflightLock.lock()
+        filesCompleteCache[variant.rawValue] = (value, Date())
+        inflightLock.unlock()
+        return value
+    }
+
+    nonisolated private static func scanModelFiles(_ variant: Variant) -> Bool {
         let dir = modelFolderURL(variant)
         let fm = FileManager.default
         var isDir: ObjCBool = false
@@ -811,6 +834,7 @@ enum LocalWhisperTranscriber {
             // treats the file as done and re-serves the SAME corruption forever.
             // Clearing it forces the next download to refetch from scratch.
             try? FileManager.default.removeItem(at: huggingFaceDownloadCacheURL(variant))
+            invalidateModelFilesCache()
             throw LocalWhisperError.modelCorruptWiped("model init failed: \(error.localizedDescription)")
         }
     }

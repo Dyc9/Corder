@@ -110,10 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The pass matches FOLDER names, and folders are "<date> <title>"
         // once renamed, so add each meeting's resolved folder name too.
         compactSkip.formUnion(compactSkip.map { AppPaths.recordingDir(for: $0).lastPathComponent })
-        Task.detached(priority: .utility) {
-            Self.compactRetainedAudio(skip: compactSkip)
-            MediaExporter.sweepStaleExports()
-        }
+        Task.detached(priority: .utility) { Self.compactRetainedAudio(skip: compactSkip) }
         // If a transcription was in flight when the previous process died
         // (forced quit, rebuild during dev, machine sleep), pick it up
         // again automatically. The audio files (mic.wav / system.wav) are
@@ -172,11 +169,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // recording dir + Dropbox files). Runs once per launch; missing
         // a launch just means the entries linger one extra day, which is
         // fine, the cap is "≥7 days, eventually wiped".
-        purgeExpiredArchive()
         // Free disk: delete mic.wav + system.wav for meetings older than
-        // 30 days that already have gemini_raw_turns cached. Re-transcribe
-        // hits the cache and never needs the originals again.
-        purgeStaleOriginals()
+        // 30 days that already have gemini_raw_turns cached (only when the
+        // playback mix covers them, see `mixCoversOriginals`).
+        //
+        // Both run off the main thread, at launch and every 6 hours: the
+        // menu-bar app stays up for weeks, and a launch-only pass kept
+        // archived meetings well past the promised 7 days (the UI showed a
+        // `purge_at` that had already passed).
+        let repo = AppContext.shared.repo
+        let housekeeping: @Sendable () -> Void = {
+            Self.purgeExpiredArchive(repo: repo)
+            Self.purgeStaleOriginals(repo: repo)
+            MediaExporter.sweepStaleExports()
+        }
+        Task.detached(priority: .utility) { housekeeping() }
+        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { _ in
+            Task.detached(priority: .utility) { housekeeping() }
+        }
         startServer()
         _ = RecordingController.shared    // bootstrap delegate wiring
         // Kick off WhisperKit model download in the background so the first
@@ -450,10 +460,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Hard-delete every meeting whose `archived_at` is more than 7 days
     /// in the past. Wipes the local recording dir and best-effort kicks
     /// off Dropbox deletions for archived video/audio paths.
-    private func purgeExpiredArchive() {
+    nonisolated private static func purgeExpiredArchive(repo: MeetingRepository) {
         let retentionMs: Int64 = 7 * 24 * 60 * 60 * 1000
         let cutoff = Int64(Date().timeIntervalSince1970 * 1000) - retentionMs
-        let repo = AppContext.shared.repo
         guard let ids = try? repo.archivedOlderThan(cutoff), !ids.isEmpty else { return }
         FileLogger.log("purgeExpiredArchive: hard-deleting \(ids.count) archived meeting(s) older than 7d")
         for id in ids {
@@ -478,10 +487,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// speaker count) reuses gemini_raw_turns and never touches the
     /// originals again. mix.wav stays, it's still served for playback.
     /// Idempotent: re-runs are no-ops when files have already been purged.
-    private func purgeStaleOriginals() {
+    nonisolated private static func purgeStaleOriginals(repo: MeetingRepository) {
         let retentionMs: Int64 = 30 * 24 * 60 * 60 * 1000
         let cutoff = Int64(Date().timeIntervalSince1970 * 1000) - retentionMs
-        let repo = AppContext.shared.repo
         guard let ids = try? repo.transcribedWithCacheOlderThan(cutoff), !ids.isEmpty else { return }
         var freed: Int64 = 0
         var purged = 0
@@ -640,7 +648,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             guard url.scheme?.lowercased() == "corder" else { continue }
-            FileLogger.log("AppDelegate: incoming URL \(url)")
+            // Never log the fragment/query: the OAuth callback carries the
+            // access and refresh tokens there.
+            FileLogger.log("AppDelegate: incoming URL \(url.scheme ?? "")://\(url.host ?? "")\(url.path)")
             Task { @MainActor in
                 do {
                     try await SupabaseClientHolder.shared.auth.session(from: url)

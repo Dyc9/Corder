@@ -1,3 +1,4 @@
+import { useWindowActive } from "../activity";
 import React from "react";
 import { ArrowLeft, Users, Search, X, Scissors } from "lucide-react";
 import { MeetingDetail, RecordingState, getMeeting, getTranscriptText, getLastError, renameMeeting } from "../api";
@@ -326,8 +327,9 @@ export function MeetingView({ meetingId, initialTitle, initialStartedAt, onDelet
     load();
   }, [reloadSignal, load]);
 
+  const windowActive = useWindowActive();
   React.useEffect(() => {
-    if (!detail) return;
+    if (!detail || !windowActive) return;
     // Re-poll while a transcription or recording is in flight.
     if (detail.status === "transcribing" || detail.status === "recording") {
       justTranscribedRef.current = true;
@@ -358,7 +360,7 @@ export function MeetingView({ meetingId, initialTitle, initialStartedAt, onDelet
       const t = setInterval(load, 2500);
       return () => clearInterval(t);
     }
-  }, [detail, load]);
+  }, [detail, load, windowActive]);
 
   // Surface backend transcription errors (Gemini quota / billing, missing
   // key, timeout) as a red toast. Polled once per meeting load, server

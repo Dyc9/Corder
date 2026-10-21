@@ -1,3 +1,4 @@
+import { usePoll } from "../activity";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { getSettings } from "../api";
@@ -18,19 +19,12 @@ import { OverlayScrollbar } from "./OverlayScrollbar";
 /// Dashboard child needs the tier yet.
 function DashTier({ render }: { render: (tier: "free" | "pro" | "max") => React.ReactNode }) {
   const [tier, setTier] = useState<"free" | "pro" | "max">("free");
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const s = await getSettings();
-        if (!alive) return;
-        setTier(s.tier === "pro" || s.tier === "max" ? s.tier : "free");
-      } catch {}
-    };
-    void tick();
-    const id = window.setInterval(tick, 5000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  usePoll(async () => {
+    try {
+      const s = await getSettings();
+      setTier(s.tier === "pro" || s.tier === "max" ? s.tier : "free");
+    } catch {}
+  }, 5000);
   return <>{render(tier)}</>;
 }
 

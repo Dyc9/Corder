@@ -1,3 +1,4 @@
+import { usePoll } from "../activity";
 import React from "react";
 import { X } from "lucide-react";
 import { getNews, type NewsAction, type NewsItem } from "../api";
@@ -40,16 +41,7 @@ export function NewsBanner({
   const [dismissed, setDismissed] = React.useState<Set<string>>(() => loadDismissed());
   const [expanded, setExpanded] = React.useState(false);
 
-  React.useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      const fresh = await getNews();
-      if (alive) setItems(fresh);
-    };
-    void tick();
-    const id = window.setInterval(tick, 10 * 60 * 1000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  usePoll(async () => { setItems(await getNews()); }, 10 * 60 * 1000);
 
   const paid = tier === "pro" || tier === "max";
   const visible = items.find((it) => {

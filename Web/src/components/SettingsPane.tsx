@@ -1,3 +1,4 @@
+import { usePoll } from "../activity";
 import React from "react";
 import { createPortal } from "react-dom";
 import { X, Search, Loader2 } from "lucide-react";
@@ -82,15 +83,7 @@ export function SettingsPane({
   // user-edited only, no polling needed.
   const isDownloading = !!s?.whisper_local_models?.some(
     (m) => typeof m.progress === "number");
-  React.useEffect(() => {
-    if (!isDownloading) return;
-    let alive = true;
-    const tick = () => {
-      getSettings().then((v) => { if (alive) setS(v); }).catch(() => {});
-    };
-    const id = window.setInterval(tick, 1000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, [isDownloading]);
+  usePoll(() => getSettings().then((v) => setS(v)).catch(() => {}), isDownloading ? 1000 : null);
 
   // Optimistic local update + debounced POST of ONLY the changed
   // fields. The backend leaves omitted fields untouched.

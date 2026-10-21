@@ -16,6 +16,19 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.85] - 2026-10-21
+
+### Changed
+
+- Corder now uses almost no energy while its window is closed or hidden. Before, the hidden window kept checking for updates to settings several times a second for as long as the app ran.
+- Call detection does less work: it only looks at the microphone when a meeting app is open, and never makes the menu or windows wait on it.
+- Archived meetings are deleted after 7 days even if you never quit Corder, and old downloads are cleaned up regularly.
+- The diagnostics log no longer grows without limit.
+
+### Fixed
+
+- A stuck network request (summary, chapters, title, cloud audio) no longer freezes the Library window; it gives up after a few minutes instead.
+
 ## [0.15.84] - 2026-10-21
 
 ### Fixed

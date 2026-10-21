@@ -1,3 +1,4 @@
+import { usePoll } from "../activity";
 import React from "react";
 import { getSettings, downloadWhisperLocal, WhisperLocalModel } from "../api";
 import type { T } from "../i18n";
@@ -24,20 +25,16 @@ export function OfflineModelRow({ t }: { t: T }) {
   // this the button would bounce back to "Download model" for one poll cycle.
   const [clicked, setClicked] = React.useState(false);
 
-  React.useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const s = await getSettings();
-        if (!alive) return;
-        setModel(s.whisper_local_models?.[0] ?? null);
-        setLoaded(true);
-      } catch { /* keep last-known; next poll recovers */ }
-    };
-    tick();
-    const id = window.setInterval(tick, 1000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  // 1 s only while the model is downloading or preparing, so the bar
+  // moves; otherwise a slow check is enough.
+  const busy = model != null && model.ready !== true && (typeof model.progress === "number" || clicked);
+  usePoll(async () => {
+    try {
+      const s = await getSettings();
+      setModel(s.whisper_local_models?.[0] ?? null);
+      setLoaded(true);
+    } catch { /* keep last-known; next poll recovers */ }
+  }, busy || !loaded ? 1000 : 10000);
 
   const ready = model?.ready === true;
   const progress = typeof model?.progress === "number" ? model.progress : null;

@@ -1,3 +1,4 @@
+import { usePoll } from "../activity";
 import React from "react";
 import { CreditCard, LifeBuoy, RefreshCw, Shield, Shuffle, Star } from "lucide-react";
 import type { T } from "../i18n";
@@ -212,24 +213,18 @@ export function ProfileMenu({
   // when the user flips tier in Settings (test Upgrade/Downgrade)
   // without having to reopen the popover. 3 s cadence is the same as
   // the rest of the polling surfaces; cheap, single GET.
-  React.useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const s = await getSettings();
-        if (!alive) return;
-        if (s.tier === "pro" || s.tier === "max") setTier(s.tier);
-        else setTier("free");
-        setIsAdmin(s.is_admin === true);
-      } catch {}
-    };
-    tick();
-    // 1 s cadence so the avatar repaints during the spinner-window
-    // floor inside `TierTestRow`, at 3 s the spinner could
-    // disappear before the avatar refreshed.
-    const id = window.setInterval(tick, 1000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  // 1 s while the popover is open so the avatar repaints during the
+  // spinner-window floor inside `TierTestRow` (at 3 s the spinner could
+  // disappear before the avatar refreshed); 5 s otherwise, the header is
+  // always mounted.
+  usePoll(async () => {
+    try {
+      const s = await getSettings();
+      if (s.tier === "pro" || s.tier === "max") setTier(s.tier);
+      else setTier("free");
+      setIsAdmin(s.is_admin === true);
+    } catch {}
+  }, open ? 1000 : 5000);
   const btnRef = React.useRef<HTMLButtonElement>(null);
   const [pos, setPos] = React.useState<{ top: number; right: number } | null>(null);
 

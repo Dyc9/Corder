@@ -1,3 +1,4 @@
+import { usePoll } from "../activity";
 import React from "react";
 import { Archive as ArchiveIcon, Settings as SettingsIcon, Plus, Square } from "lucide-react";
 
@@ -164,15 +165,7 @@ function HeaderRecordButton({
   t: T;
 }) {
   const [recording, setRecording] = React.useState(false);
-  React.useEffect(() => {
-    let alive = true;
-    const tick = () => {
-      getRecordingState().then((s) => { if (alive) setRecording(!!s.active); }).catch(() => {});
-    };
-    tick();
-    const id = window.setInterval(tick, 1500);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  usePoll(() => getRecordingState().then((s) => setRecording(!!s.active)).catch(() => {}), 1500);
 
   const onClick = async () => {
     if (recording) {
@@ -222,21 +215,12 @@ function HeaderRecordButton({
 function GuestSessionCounter() {
   const [left, setLeft] = React.useState<number | null>(null);
   const [isGuest, setIsGuest] = React.useState(false);
-  React.useEffect(() => {
-    let alive = true;
-    const tick = () => {
-      getAccountUsage().then((u) => {
-        if (!alive) return;
-        if (u && u.is_guest) { setIsGuest(true); setLeft(u.sessions_left); }
-        else { setIsGuest(false); setLeft(null); }
-      }).catch(() => {});
-    };
-    tick();
-    // Poll often enough that creating / deleting a recording updates the
-    // count within a couple seconds without a manual refresh.
-    const id = window.setInterval(tick, 4000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  // Poll often enough that creating / deleting a recording updates the
+  // count within a couple seconds without a manual refresh.
+  usePoll(() => getAccountUsage().then((u) => {
+    if (u && u.is_guest) { setIsGuest(true); setLeft(u.sessions_left); }
+    else { setIsGuest(false); setLeft(null); }
+  }).catch(() => {}), 4000);
 
   if (!isGuest || left == null) return null;
   // Always the neutral pill, never the green "is-low" treatment when running

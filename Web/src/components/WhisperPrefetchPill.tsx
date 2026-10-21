@@ -1,3 +1,4 @@
+import { usePoll } from "../activity";
 import React from "react";
 import { Loader2 } from "lucide-react";
 import { getSettings, downloadWhisperLocal, setSettings, WhisperLocalModel } from "../api";
@@ -33,12 +34,9 @@ export function WhisperPrefetchPill({ t, onToast }: { t: T; onToast?: (m: string
   // picker ("Whisper Cloud · cloud" popping in late looked broken).
   const [loaded, setLoaded] = React.useState(false);
 
-  React.useEffect(() => {
-    let alive = true;
-    const tick = async () => {
+  usePoll(async () => {
       try {
         const s = await getSettings();
-        if (!alive) return;
         setVariant(s.whisper_local_variant);
         setModels(s.whisper_local_models ?? []);
         setProvider(s.transcription_provider);
@@ -46,11 +44,7 @@ export function WhisperPrefetchPill({ t, onToast }: { t: T; onToast?: (m: string
         setIsAdmin(s.is_admin === true);
         setLoaded(true);
       } catch { /* keep last-known; next poll recovers */ }
-    };
-    tick();
-    const id = window.setInterval(tick, 1000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  }, 1000);
   const paid = tier === "pro" || tier === "max";
 
   // Build a flat option list combining the cloud providers and every

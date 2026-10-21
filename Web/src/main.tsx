@@ -1,3 +1,4 @@
+import { usePoll, useWindowActive } from "./activity";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { listMeetings, listArchive, MeetingSummary, ArchivedMeeting, RecordingState, getRecordingState, getSettings, archiveMeeting, restoreMeeting, startRecordingNow, stopRecordingNow, submitLogs } from "./api";
@@ -202,14 +203,7 @@ function App() {
   // poll timers stops pointless background requests/CPU. Defaults to
   // active so the very first open (event may fire before listeners
   // attach) still polls.
-  const [windowActive, setWindowActive] = React.useState(true);
-  React.useEffect(() => {
-    const onActive = (e: Event) => {
-      setWindowActive(!!(e as CustomEvent).detail);
-    };
-    window.addEventListener("corder-window-active", onActive);
-    return () => window.removeEventListener("corder-window-active", onActive);
-  }, []);
+  const windowActive = useWindowActive();
 
   // Native → web toast bridge. RecordingController posts a
   // `corder-toast` event when the user should see something inside
@@ -411,21 +405,14 @@ function App() {
   // signed-in user never flashes it hidden; a guest hides it after the first poll.
   const [signedIn, setSignedIn] = React.useState(true);
 
-  React.useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const s = await getSettings();
-        if (!alive) return;
-        const v = s.tier ?? (s.is_pro ? "pro" : "free");
-        if (v === "free" || v === "pro" || v === "max") setTier(v);
-        setSignedIn(!!s.user_email);
-      } catch {}
-    };
-    void tick();
-    const id = window.setInterval(tick, 4000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  usePoll(async () => {
+    try {
+      const s = await getSettings();
+      const v = s.tier ?? (s.is_pro ? "pro" : "free");
+      if (v === "free" || v === "pro" || v === "max") setTier(v);
+      setSignedIn(!!s.user_email);
+    } catch {}
+  }, 5000);
 
   // A guest must never sit on the (now-hidden) Advanced settings slice, if they
   // were on it when signing out, snap back to General.

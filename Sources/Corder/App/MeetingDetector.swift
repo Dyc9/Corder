@@ -89,7 +89,12 @@ final class MeetingDetector {
         // from AppKit, which is not free. `tolerance` lets macOS coalesce
         // ticks with other timers to save battery.
         timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+            Task { @MainActor in
+                guard let self, !self.tickInFlight else { return }
+                self.tickInFlight = true
+                await self.tick()
+                self.tickInFlight = false
+            }
         }
         timer?.tolerance = 1.0
         FileLogger.log("MeetingDetector: started")
@@ -111,7 +116,11 @@ final class MeetingDetector {
         MenuBarController.shared?.cancelInviteOffer()
     }
 
-    private func tick() {
+    /// A tick awaits Core Audio off the main thread; a slow coreaudiod
+    /// (Bluetooth route change, daemon restart) must not stack ticks.
+    private var tickInFlight = false
+
+    private func tick() async {
         // Skip the entire detector while the Welcome wizard is
         // unfinished. Offering a recording before setup is locked
         // would be misleading, the user can't accept (popover Start
@@ -137,9 +146,27 @@ final class MeetingDetector {
         )
         offeredFor = offeredFor.filter { runningBundles.contains($0) }
 
+        // The gate the comment above promises: with no candidate meeting
+        // app running there is nobody to offer a recording for, so skip the
+        // Core Audio queries (about 21,600 IPC round trips a day otherwise).
+        let blacklistEarly = Set(AppSettings.meetingBlacklist)
+        let candidateRunning = Self.knownApps.contains { !blacklistEarly.contains($0.bundle) && runningBundles.contains($0.bundle) }
+            || AppSettings.meetingWhitelist.contains { !blacklistEarly.contains($0) && runningBundles.contains($0) }
+        guard candidateRunning else {
+            if inputBusySince != nil { offeredFor.removeAll() }
+            inputBusySince = nil
+            return
+        }
+
         // Per-process mic ownership when the API is available (macOS
-        // 14.4+); `nil` ⇒ fall back to the old coarse heuristic.
-        let micOwners = Self.bundlesRunningInput()
+        // 14.4+); `nil` ⇒ fall back to the old coarse heuristic. Both are
+        // Core Audio IPC, so they run off the main thread.
+        let (micOwners, deviceClaimed) = await Task.detached(priority: .utility) { () -> (Set<String>?, Bool) in
+            let owners = Self.bundlesRunningInput()
+            return (owners, owners == nil ? Self.isInputDeviceClaimedByOtherProcess() : false)
+        }.value
+        // Our own recording may have started while we waited.
+        guard AppContext.shared.recordingState == .idle else { return }
         // Surface every mic owner to the Settings picker so the user can
         // white/blacklist an app by tapping it (no bundle-id typing).
         if let owners = micOwners { MicAppsSnapshot.update(Array(owners)) }
@@ -187,7 +214,7 @@ final class MeetingDetector {
             }
         } else {
             let anyRunning = effectiveApps.contains { runningBundles.contains($0.bundle) }
-            micBusy = anyRunning && Self.isInputDeviceClaimedByOtherProcess()
+            micBusy = anyRunning && deviceClaimed
         }
         if micBusy {
             if inputBusySince == nil { inputBusySince = now }
@@ -282,7 +309,7 @@ final class MeetingDetector {
     /// True iff some process has the default input device live. We don't
     /// distinguish processes here, the caller gates on `recordingState`
     /// to make sure Corder itself isn't the one holding the device.
-    private static func isInputDeviceClaimedByOtherProcess() -> Bool {
+    nonisolated private static func isInputDeviceClaimedByOtherProcess() -> Bool {
         var device: AudioDeviceID = kAudioObjectUnknown
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var addr = AudioObjectPropertyAddress(
@@ -332,7 +359,7 @@ final class MeetingDetector {
     /// background Zoom while Loom / OBS / Terminal / QuickTime is the
     /// real recorder no longer mis-fires an offer, because none of
     /// those is a known meeting app that's *itself* on the input.
-    private static func bundlesRunningInput() -> Set<String>? {
+    nonisolated private static func bundlesRunningInput() -> Set<String>? {
         guard #available(macOS 14.4, *) else { return nil }
 
         var listAddr = AudioObjectPropertyAddress(

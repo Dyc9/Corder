@@ -1011,11 +1011,15 @@ extension LibraryWindow: NSWindowDelegate {
         // decision and apply the SETTLED state ~350 ms later, so a burst of
         // changes collapses into one suppress/unsuppress.
         occlusionDebounce?.cancel()
-        let work = DispatchWorkItem { [weak window] in
+        let work = DispatchWorkItem { [weak self, weak window] in
             // Re-read the live state at fire time, if it flapped back, this
             // reflects where it actually settled, not the value at schedule time.
             let settled = window?.occlusionState.contains(.visible) ?? false
             RecordingHUDPanel.shared.setLibrarySuppressed(settled)
+            // Minimise, Cmd+H, another Space and full cover all land here as
+            // "not visible"; the page pauses every poller until it is back
+            // (Web/src/activity.ts). show/close also call this directly.
+            self?.setWebActive(settled)
         }
         occlusionDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
