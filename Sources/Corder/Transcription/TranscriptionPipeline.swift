@@ -134,6 +134,13 @@ final class TranscriptionPipeline {
         let task = Task { @MainActor [weak self] in
             await previous?.value          // let the cancelled run finish
             guard let self else { return }
+            // Cancelled while waiting (user hit Cancel, or a newer enqueue
+            // cancelled us): starting now would write `.transcribing` over
+            // the `.failed` that cancel() just set and burn an attempt.
+            guard !Task.isCancelled else {
+                if self.taskGen[meetingId] == gen { self.activeTasks[meetingId] = nil }
+                return
+            }
             // A still-newer enqueue may have superseded us while we
             // waited on `previous`, don't start a stale run.
             guard self.taskGen[meetingId] == gen else {
@@ -141,6 +148,10 @@ final class TranscriptionPipeline {
                 return
             }
             await self.transcribe(meetingId: meetingId, forceFresh: forceFresh)
+            // A rename the user made while the run was going was kept off
+            // the folder (see `RecordingDirNaming`); apply it now. No-op
+            // when the folder already matches the title.
+            RecordingDirNaming.renameToTitled(repo: AppContext.shared.repo, meetingId: meetingId)
             if self.taskGen[meetingId] == gen { self.activeTasks[meetingId] = nil }
         }
         activeTasks[meetingId] = task
@@ -159,7 +170,10 @@ final class TranscriptionPipeline {
         }
         FileLogger.log("cancel(): cancelling transcription for \(meetingId)")
         task.cancel()
-        activeTasks[meetingId] = nil
+        // Keep the entry: a cancelled run can take a while to unwind (cloud
+        // retries, local decode) and the next `enqueue` must wait for it,
+        // otherwise two runs write the same meeting's transcript and temp
+        // files at once. The task clears its own entry when it ends.
         // Targeted status write, never a full-row update: the row may be
         // mid-change (title, pin, speakers) and a stale copy would clobber it.
         do { try AppContext.shared.repo.setStatus(meetingId: meetingId, status: .failed) }
@@ -984,10 +998,11 @@ final class TranscriptionPipeline {
                 // user did during the run survives the auto-archive.
                 try? repo.setTranscribeFinished(meetingId: meetingId, status: .ready, transcribedAt: now)
                 try? repo.setArchived(meetingId: meetingId, archivedAt: now)
-                // Best-effort: drop the local audio dir too, there's
-                // nothing of value in it. Dropbox archive is skipped
-                // by virtue of returning before the upload branch.
-                try? FileManager.default.removeItem(at: AppPaths.recordingDir(for: meetingId))
+                // The audio stays on disk for the 7 archive days
+                // (`purgeExpiredArchive` removes it). "No speech" is a guess
+                // by a fixed-threshold VAD: a quiet far-field mic or a
+                // low-level import can still hold the whole meeting, and a
+                // Re-transcribe must have something to work on.
                 return
             }
 

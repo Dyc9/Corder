@@ -107,6 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var compactSkip = Set<String>()
         if let s = try? AppContext.shared.repo.stuckTranscribingMeetingIds() { compactSkip.formUnion(s) }
         if let f = try? AppContext.shared.repo.failedRetriableMeetingIds(maxAttempts: 3) { compactSkip.formUnion(f) }
+        // The pass matches FOLDER names, and folders are "<date> <title>"
+        // once renamed, so add each meeting's resolved folder name too.
+        compactSkip.formUnion(compactSkip.map { AppPaths.recordingDir(for: $0).lastPathComponent })
         Task.detached(priority: .utility) { Self.compactRetainedAudio(skip: compactSkip) }
         // If a transcription was in flight when the previous process died
         // (forced quit, rebuild during dev, machine sleep), pick it up
@@ -452,6 +455,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var purged = 0
         for id in ids {
             let dir = AppPaths.recordingDir(for: id)
+            // The playback mix is the only copy left once the originals go,
+            // so it must exist and cover the whole meeting. A missing,
+            // partial or unreadable audio.wav keeps the originals.
+            guard Self.mixCoversOriginals(in: dir) else { continue }
             for name in ["mic.wav", "system.wav"] {
                 let url = dir.appendingPathComponent(name)
                 if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int64 {
@@ -466,6 +473,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FileLogger.log(String(format: "purgeStaleOriginals: removed %d original tracks across %d cached meetings, freed %.1f MB",
                                   purged, ids.count, mb))
         }
+    }
+
+    /// True when `audio.wav` opens and is at least as long as the longest
+    /// original track (minus a second of slack for left-pad rounding).
+    nonisolated static func mixCoversOriginals(in dir: URL) -> Bool {
+        func seconds(_ name: String) -> Double? {
+            guard let f = try? AVAudioFile(forReading: dir.appendingPathComponent(name)),
+                  f.processingFormat.sampleRate > 0 else { return nil }
+            return Double(f.length) / f.processingFormat.sampleRate
+        }
+        guard let mix = seconds("audio.wav"), mix > 0 else { return false }
+        let longest = max(seconds("mic.wav") ?? 0, seconds("system.wav") ?? 0)
+        return mix >= longest - 1
     }
 
     /// Reap any OLDER Corder process still running (this instance is the

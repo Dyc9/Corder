@@ -193,6 +193,10 @@ enum LocalWhisperTranscriber {
     /// alongside one already running crashes Metal (concurrent MPSGraph
     /// inference → SIGABRT). See the in-flight branch in `stageAndLoad`.
     private static var initTaskIsPrewarm = false
+    /// The GPU load a transcribe starts while a prewarm ANE compile is still
+    /// running (see `stageAndLoad`). Shared so concurrent callers await one
+    /// load instead of each starting their own.
+    private static var gpuFallbackTask: Task<Void, Error>?
 
     /// Per-variant in-flight download progress (0.0…1.0). Read by the
     /// HTTP `/api/whisper-local/status` poll so the React DownloadButton
@@ -268,6 +272,14 @@ enum LocalWhisperTranscriber {
         // those folders appeared and bounced the UI to "ready" while
         // the bytes were still streaming in.
         if currentProgress(variant) != nil { return false }
+        return modelFilesComplete(variant)
+    }
+
+    /// The on-disk half of `isModelDownloaded`, ignoring the progress flag.
+    /// That flag stays lit (0.99, "preparing") through the minutes-long
+    /// compile AFTER the download finished, so a transcribe that arrives
+    /// during the compile must not read it as "files missing".
+    nonisolated static func modelFilesComplete(_ variant: Variant) -> Bool {
         let dir = modelFolderURL(variant)
         let fm = FileManager.default
         var isDir: ObjCBool = false
@@ -429,6 +441,10 @@ enum LocalWhisperTranscriber {
             var lastLoggedDecile = -1
             var lastLogAt = Date()
             while let p = currentProgress(variant) {
+                // Download finished, the prewarm is compiling. The files are
+                // complete; the single-flight load below coordinates with
+                // the compile, so stop waiting on bytes that won't move.
+                if isPreparing(variant), modelFilesComplete(variant) { break }
                 if p > lastProg { lastProg = p; lastAdvance = Date() }
                 let decile = Int(p * 10)
                 if decile > lastLoggedDecile || Date().timeIntervalSince(lastLogAt) >= 15 {
@@ -444,7 +460,7 @@ enum LocalWhisperTranscriber {
             }
         }
 
-        if !isModelDownloaded(variant) {
+        if !modelFilesComplete(variant) {
             FileLogger.log("LocalWhisper: model not on disk, downloading \(variant.rawValue) into \(downloadBaseURL.path)")
             setProgress(variant, 0.0)
             defer { setProgress(variant, nil) }
@@ -563,6 +579,15 @@ enum LocalWhisperTranscriber {
                     // it failed, fall through to our own load (it's done now)
                     FileLogger.log("LocalWhisper: in-flight transcribe load failed (\(error)), loading ourselves")
                 }
+            } else if ProcessInfo.processInfo.physicalMemory / 1_073_741_824 <= 8 {
+                // On <=8 GB the prewarm itself loads through the GPU (see
+                // loadPipe), so a GPU load of ours would be the second Metal
+                // load at once. Ride the prewarm to the end instead.
+                FileLogger.log("LocalWhisper: prewarm in flight on a <=8 GB Mac (GPU load), waiting for it")
+                do { try await inFlight.value } catch {
+                    FileLogger.log("LocalWhisper: in-flight prewarm failed (\(error)), loading ourselves")
+                }
+                if pipe != nil { return }
             } else {
                 do {
                     try await withDeadline(aneBudget) { try await inFlight.value }
@@ -573,7 +598,18 @@ enum LocalWhisperTranscriber {
                     }
                     FileLogger.log("LocalWhisper: in-flight prewarm didn't finish in \(Int(aneBudget))s, trying GPU directly (safe alongside the ANE compile)")
                     do {
-                        try await loadGPU(variant)
+                        // Single-flight across callers: mic and system tracks
+                        // transcribe concurrently and both land here, and two
+                        // GPU loads at once is the MPSGraph SIGABRT.
+                        if let gpu = gpuFallbackTask {
+                            try await gpu.value
+                        } else {
+                            let gpu = Task<Void, Error> { try await loadGPU(variant) }
+                            gpuFallbackTask = gpu
+                            defer { gpuFallbackTask = nil }
+                            try await gpu.value
+                        }
+                        guard pipe != nil else { throw LocalWhisperError.modelLoadTimedOut }
                         return
                     } catch LocalWhisperError.modelLoadTimedOut {
                         // Slow Mac: the GPU encoder ALSO couldn't compile inside

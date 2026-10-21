@@ -12,6 +12,11 @@ protocol CaptureEngineDelegate: AnyObject {
     /// The process tap exhausted its rebuilds on a Bluetooth route, the far end
     /// is being lost RIGHT NOW. Warn the user mid-recording so they can react.
     @MainActor func captureEngineFarEndUnavailable(_ engine: CaptureEngine)
+    /// SCStream (screen video) stopped on its own mid-recording: the system
+    /// "Stop Sharing" button, a revoked Screen Recording grant, a display
+    /// unplugged. The video is finalised up to that point and the audio
+    /// keeps recording; this is a heads-up, not a failure.
+    @MainActor func captureEngineVideoLost(_ engine: CaptureEngine, error: Error)
 }
 
 enum CaptureError: Error, LocalizedError {
@@ -58,6 +63,13 @@ final class CaptureEngine: NSObject {
     /// "closed after stop": once set, late buffers are dropped, never
     /// reopened.
     nonisolated(unsafe) private var tearingDown = false
+    /// Held for the whole capture (recording and pre-roll) so the Mac does
+    /// not idle-sleep under an in-person meeting nobody touches the laptop
+    /// in. The display may still sleep; capture does not need it.
+    private var sleepActivity: NSObjectProtocol?
+    /// An `AVAudioEngineConfigurationChange` arrived while `start()` was
+    /// still bringing the engine up; replayed right after arming.
+    private var micConfigChangedDuringStart = false
     private(set) var startedAt: Date?
     private(set) var meetingId: String?
 
@@ -560,6 +572,26 @@ final class CaptureEngine: NSObject {
         self.micFile = nil
         self.micFramesWritten = 0
         let engine = AVAudioEngine()
+        // Watch for route/config changes BEFORE the engine starts: starting
+        // the mic on a Bluetooth headset itself flips it from A2DP to HFP,
+        // and a change notification that lands before the observer exists
+        // is lost, the engine stops itself and mic.wav stays silent for the
+        // whole meeting. A change during start is replayed once armed.
+        if let observer = micConfigObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        micConfigChangedDuringStart = false
+        micConfigObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.isRecording { self.handleMicConfigChange() }
+                else if self.starting { self.micConfigChangedDuringStart = true }
+            }
+        }
         // If the user has picked a specific input device in Settings,
         // bind the engine's input AUHAL to that device BEFORE asking
         // for the format, `outputFormat(forBus:)` queries the unit's
@@ -671,6 +703,15 @@ final class CaptureEngine: NSObject {
             }
             self.stream = nil
             self.sckSystemURL = nil
+            // The video writer was already started; leaving it `.writing`
+            // leaks it and a half video.mov (no finishWriting ever comes).
+            self.videoWriter?.cancelWriting()
+            self.videoWriter = nil
+            self.videoInput = nil
+            if let observer = micConfigObserver {
+                NotificationCenter.default.removeObserver(observer)
+                micConfigObserver = nil
+            }
             inputNode.removeTap(onBus: 0)
             if engine.isRunning { engine.stop() }
             self.micFile = nil
@@ -682,16 +723,8 @@ final class CaptureEngine: NSObject {
         // without re-tapping the mic goes silent for the rest of the session
         // the "took a call, plugged in headphones, lost 90 minutes" bug. The
         // handler re-taps the new device + restarts the engine.
-        if let observer = micConfigObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        micConfigObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: audioEngine,
-            queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor in self?.handleMicConfigChange() }
-        }
+        // (The observer itself is registered before engine.start(), see
+        // `micConfigChangedDuringStart`.)
 
         // 6. system.wav via the Core Audio process tap. Opened lazily
         //    on the first tap buffer (we take the format from the tap).
@@ -755,6 +788,14 @@ final class CaptureEngine: NSObject {
         self.micURL = micURL
 
         FileLogger.log("CaptureEngine.start: recording state armed")
+        if micConfigChangedDuringStart {
+            micConfigChangedDuringStart = false
+            FileLogger.log("CaptureEngine.start: audio config changed during start, re-tapping the mic")
+            handleMicConfigChange()
+        }
+        sleepActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled],
+            reason: "Corder is recording a meeting")
 
         // If a stop() arrived while we were warming up, honour it now
         // otherwise the just-armed capture would run forever with nothing
@@ -798,8 +839,7 @@ final class CaptureEngine: NSObject {
             if sckSystemURL != nil {
                 try? stream.removeStreamOutput(self, type: .audio)
             }
-            do { try await stream.stopCapture(); FileLogger.log("CaptureEngine.stop: SCStream stopped") }
-            catch { FileLogger.log("CaptureEngine.stop: SCStream.stopCapture error: \(error)") }
+            await Self.stopCapture(stream, timeoutSeconds: 5)
         }
         stream = nil
 
@@ -869,6 +909,10 @@ final class CaptureEngine: NSObject {
         videoSessionStarted = false
 
         isRecording = false
+        if let activity = sleepActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            sleepActivity = nil
+        }
         FileLogger.log("CaptureEngine.stop: complete")
         delegate?.captureEngine(self, didStopMeeting: id)
 
@@ -915,6 +959,9 @@ extension CaptureEngine: SCStreamOutput {
     }
 
     nonisolated private func writeVideo(_ buffer: CMSampleBuffer) {
+        // A frame queued before stop() must not reach a writer that stop()
+        // is finishing (`append` after `markAsFinished` raises NSException).
+        guard !tearingDown else { return }
         guard let writer = videoWriter, let input = videoInput else { return }
         guard writer.status == .writing else {
             if writer.status == .failed {
@@ -1309,10 +1356,84 @@ extension CaptureEngine: SCStreamOutput {
 
 extension CaptureEngine: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
+        let stopped = UncheckedTransfer(value: stream)
         Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            self.delegate?.captureEngine(self, didFailWithError: error)
+            await self?.handleStreamStopped(stopped.value, error: error)
         }
+    }
+}
+
+extension CaptureEngine {
+    /// SCStream only carries video (system audio comes from the process tap,
+    /// the mic from AVAudioEngine), so losing it loses the video and nothing
+    /// else. Before 0.15.83 this was reported as a capture failure: the row
+    /// went `.failed`, the state went `.idle`, but the tap and the mic kept
+    /// writing until quit, with no way to stop them (a zombie capture).
+    fileprivate func handleStreamStopped(_ stopped: SCStream, error: Error) async {
+        guard isRecording, !tearingDown, let current = stream, current === stopped else {
+            FileLogger.log("CaptureEngine: SCStream stopped (\(error.localizedDescription)) outside a live capture, ignored")
+            return
+        }
+        FileLogger.log("CaptureEngine: SCStream stopped mid-recording (\(error.localizedDescription)), finalising video, audio continues")
+        try? current.removeStreamOutput(self, type: .screen)
+        if sckSystemURL != nil { try? current.removeStreamOutput(self, type: .audio) }
+        stream = nil
+        // The video and SCK writers are used on `writeQueue`; detach them
+        // there so a frame already queued never lands on a finished writer.
+        let detached = writeQueue.sync { () -> UncheckedTransfer<(AVAssetWriter?, AVAssetWriterInput?)> in
+            let pair = (self.videoWriter, self.videoInput)
+            self.videoWriter = nil
+            self.videoInput = nil
+            self.sckSystemURL = nil
+            self.sckAudioFile = nil
+            return UncheckedTransfer(value: pair)
+        }
+        let (writer, input) = detached.value
+        if let writer, writer.status == .writing {
+            input?.markAsFinished()
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                writer.finishWriting {
+                    FileLogger.log("CaptureEngine: video.mov finalised after SCStream stop, frames=\(self.videoFramesAppended), status=\(writer.status.rawValue)")
+                    cont.resume()
+                }
+            }
+        }
+        videoSessionStarted = false
+        delegate?.captureEngineVideoLost(self, error: error)
+    }
+
+    /// `SCStream.stopCapture()` with a ceiling. It has been seen to never
+    /// return around sleep and display changes, and `stop()` must always
+    /// reach the audio teardown behind it.
+    fileprivate static func stopCapture(_ stream: SCStream, timeoutSeconds: Double) async {
+        let box = UncheckedTransfer(value: stream)
+        let once = ResumeOnce()
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            Task {
+                do { try await box.value.stopCapture(); FileLogger.log("CaptureEngine.stop: SCStream stopped") }
+                catch { FileLogger.log("CaptureEngine.stop: SCStream.stopCapture error: \(error)") }
+                if once.claim() { cont.resume() }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                if once.claim() {
+                    FileLogger.log("CaptureEngine.stop: SCStream.stopCapture still pending after \(timeoutSeconds)s, moving on")
+                    cont.resume()
+                }
+            }
+        }
+    }
+}
+
+/// First caller of `claim()` wins; used to resume a continuation exactly once.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if done { return false }
+        done = true
+        return true
     }
 }
 

@@ -35,19 +35,27 @@ enum DemoSeeder {
             if (try? repo.deleteMeeting(id: id)) != nil { dropped += 1 }
         }
         // Title sweep too, in case older builds left rows without the
-        // stored id list (v1 didn't track them).
-        let knownTitles: Set<String> = [
-            "Daily standup",
-            "1:1 with Dima, quarterly plan",
-            "All hands, Q1 review",
-            // v1 (russian, in case any v1 installs survive)
-            "Standup, что блокирует и кто блестит",
-            "1:1 с Димой, план на квартал",
-            "All-hands, итоги Q1",
-        ]
-        if let all = try? repo.listMeetings() {
-            for row in all where row.title.map(knownTitles.contains) == true {
-                if (try? repo.deleteMeeting(id: row.id)) != nil { dropped += 1 }
+        // stored id list (v1 didn't track them). This used to run on every
+        // launch and deleted REAL meetings the auto-titler happened to name
+        // "Daily standup" (locally and in Supabase). Now it runs once per
+        // install and only takes rows that look like a demo row, see
+        // `isDemoLookingRow`.
+        if !AppSettings.demoTitleSweepDone {
+            AppSettings.setDemoTitleSweepDone(true)
+            let knownTitles: Set<String> = [
+                "Daily standup",
+                "1:1 with Dima, quarterly plan",
+                "All hands, Q1 review",
+                // v1 (russian, in case any v1 installs survive)
+                "Standup, что блокирует и кто блестит",
+                "1:1 с Димой, план на квартал",
+                "All-hands, итоги Q1",
+            ]
+            if let all = try? repo.listMeetings() {
+                for row in all where row.title.map(knownTitles.contains) == true
+                    && Self.isDemoLookingRow(row) {
+                    if (try? repo.deleteMeeting(id: row.id)) != nil { dropped += 1 }
+                }
             }
         }
         AppSettings.setDemoSeededIDs([])
@@ -56,6 +64,23 @@ enum DemoSeeder {
         if dropped > 0 {
             FileLogger.log("DemoSeeder.removeAll: dropped \(dropped) demo rows")
         }
+    }
+
+    /// A row DemoSeeder could have inserted: its id is an UPPERCASE UUID (the
+    /// seeder used `UUID().uuidString`, every real recording and import uses
+    /// `.lowercased()`) and it has no audio on disk (demo rows never had any).
+    /// Both must hold, so a real meeting that shares a demo title is never
+    /// touched.
+    static func isDemoLookingRow(_ row: Meeting) -> Bool {
+        guard row.id != row.id.lowercased() else { return false }
+        let fm = FileManager.default
+        let dir = AppPaths.recordingDir(for: row.id)
+        for name in ["mic.wav", "system.wav", "audio.wav", "video.mov"]
+        where fm.fileExists(atPath: dir.appendingPathComponent(name).path) {
+            return false
+        }
+        if fm.fileExists(atPath: row.audioPath) { return false }
+        return true
     }
 
     /// Run the one-shot seed (or re-seed if the content version has
@@ -89,7 +114,8 @@ enum DemoSeeder {
             ]
             var swept = 0
             if let all = try? repo.listMeetings() {
-                for row in all where row.title.map(legacyTitles.contains) == true {
+                for row in all where row.title.map(legacyTitles.contains) == true
+                    && Self.isDemoLookingRow(row) {
                     try? repo.deleteMeeting(id: row.id)
                     swept += 1
                 }

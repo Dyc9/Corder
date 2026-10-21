@@ -14,10 +14,15 @@ import AppKit
 ///
 /// Events we listen to (NSWorkspace publishes them all on the main thread):
 ///   - `willSleepNotification`             system going to suspend
-///   - `screensDidSleepNotification`       display sleep, usually harmless,
-///                                          but combined with extended idle
-///                                          it tends to silently kill mic
 ///   - `sessionDidResignActiveNotification` fast user switch / login window
+///
+/// Display sleep is NOT a stop reason (it was until 0.15.83). An in-person
+/// meeting on a laptop nobody touches dims the screen within minutes, and
+/// stopping there cut the recording short. The mic, the process tap and the
+/// writers all keep running with the display off, and `CaptureEngine` holds
+/// an idle-sleep assertion for the whole capture, so the system itself does
+/// not doze off under it. If SCStream (video) dies with the display, that is
+/// handled as "video lost, audio continues" in `CaptureEngine`.
 @MainActor
 final class SleepWatchdog {
     static let shared = SleepWatchdog()
@@ -39,16 +44,6 @@ final class SleepWatchdog {
             Task { @MainActor in
                 SleepWatchdog.shared.handle(reason: "system-sleep",
                                              message: "Recording stopped: Mac is going to sleep.")
-            }
-        })
-
-        observers.append(center.addObserver(
-            forName: NSWorkspace.screensDidSleepNotification,
-            object: nil, queue: .main
-        ) { _ in
-            Task { @MainActor in
-                SleepWatchdog.shared.handle(reason: "screen-sleep",
-                                             message: "Recording stopped: display went to sleep.")
             }
         })
 

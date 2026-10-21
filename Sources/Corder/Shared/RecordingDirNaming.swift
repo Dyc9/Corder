@@ -20,6 +20,23 @@ enum RecordingDirNaming {
     /// correctly named, has no usable title, or its source folder is missing.
     static func renameToTitled(repo: MeetingRepository, meetingId: String) {
         guard let meeting = try? repo.meeting(id: meetingId) else { return }
+        // Never move the folder of a meeting that is being captured or
+        // transcribed: the capture opens system.wav lazily by its old path
+        // and the pipeline holds file URLs from a snapshot. A folder left at
+        // `<id>` is renamed by `migrateExistingFolders` on a later launch.
+        switch meeting.status {
+        case .recording, .preroll, .transcribing:
+            FileLogger.log("RecordingDirNaming: \(meetingId) is \(meeting.status.rawValue), folder rename deferred")
+            return
+        case .ready, .failed:
+            break
+        }
+        switch RecordingStateSnapshot.read() {
+        case .recording(let id, _), .preroll(let id, _):
+            if id == meetingId { return }
+        case .idle, .stopping:
+            break
+        }
         let fm = FileManager.default
         let desired = AppPaths.folderName(startedAtMs: meeting.startedAt, title: meeting.title)
         let currentName = meeting.dirName ?? meetingId

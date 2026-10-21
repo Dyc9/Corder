@@ -16,6 +16,20 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.83] - 2026-10-21
+
+### Fixed
+
+- A meeting that happened to be titled "Daily standup", "All hands, Q1 review" or one of a few other old sample names could disappear after a restart. Real meetings are never removed that way any more.
+- A recording where Corder heard no speech is moved to Archive as before, but its audio now stays there for the full 7 days instead of being deleted right away, so you can still listen to it or transcribe it again.
+- Recording no longer stops when the screen goes dark. An in-person meeting on a laptop nobody touches keeps recording, and the Mac does not doze off mid-meeting.
+- If screen sharing ends while you record with video (the "Stop Sharing" button, or the screen permission changes), the video stops there but the audio keeps recording and you can stop it as usual. Before, the recording got stuck and could not be stopped.
+- Old original audio tracks are only cleaned up when the playback copy is complete.
+- Renaming a meeting while it records or transcribes no longer moves its folder in the middle of the work; the folder follows the new name when it is done.
+- Starting a recording right when Corder noticed a call no longer fails with "Already recording".
+- Fixed a rare crash with on-device transcription while the model was still being prepared for the first time.
+- If your audio device changes right as a recording starts (for example Bluetooth headphones switching on), your microphone keeps recording.
+
 ## [0.15.82] - 2026-10-20
 
 ### Fixed

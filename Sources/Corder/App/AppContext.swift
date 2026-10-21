@@ -722,6 +722,17 @@ enum AppSettings {
     static func setDemoSeededIDs(_ ids: [String]) {
         UserDefaults.standard.set(ids, forKey: kDemoSeededIDs)
     }
+
+    /// The by-title demo sweep (`DemoSeeder.removeAll`) has run once on this
+    /// Mac. Before 0.15.83 it ran on every launch and could delete real
+    /// meetings that shared a demo title.
+    private static let kDemoTitleSweepDone = "Corder.set.demoTitleSweepDone"
+    static var demoTitleSweepDone: Bool {
+        UserDefaults.standard.bool(forKey: kDemoTitleSweepDone)
+    }
+    static func setDemoTitleSweepDone(_ v: Bool) {
+        UserDefaults.standard.set(v, forKey: kDemoTitleSweepDone)
+    }
 }
 
 enum SourceMode: String {

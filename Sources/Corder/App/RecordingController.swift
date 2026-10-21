@@ -13,6 +13,11 @@ final class RecordingController {
     /// Reset at the top of each `startRecording`.
     private var farEndWarnedThisSession = false
 
+    /// True while `startPreroll` brings a silent capture up. Deliberately
+    /// not the published `recordingStarting`: a pre-roll must stay invisible
+    /// in the menu.
+    private var prerollStarting = false
+
     /// Start a new recording.
     ///
     /// `expectedOtherSpeakers` lets the caller seed the meeting with a
@@ -37,6 +42,16 @@ final class RecordingController {
         // Never open a second capture over a live recording / teardown.
         guard AppContext.shared.recordingState == .idle else {
             FileLogger.log("startRecording: ignored, state is not idle")
+            return
+        }
+        // A silent pre-roll is still warming up (the call was just detected):
+        // wait for it and promote it, instead of opening a second capture
+        // that fails with "Already recording".
+        if prerollStarting {
+            FileLogger.log("startRecording: pre-roll is warming up, waiting to promote it")
+            while prerollStarting { try? await Task.sleep(nanoseconds: 100_000_000) }
+            if case .preroll = AppContext.shared.recordingState { await commitPreroll() }
+            else if AppContext.shared.recordingState == .idle { await startRecording(source: source, expectedOtherSpeakers: expectedOtherSpeakers) }
             return
         }
         guard !AppContext.shared.recordingStarting else {
@@ -143,7 +158,8 @@ final class RecordingController {
     /// prompts and never shows an error: pre-roll must be invisible.
     @discardableResult
     func startPreroll(source: CaptureSource, expectedOtherSpeakers: Int? = nil) async -> String? {
-        guard AppContext.shared.recordingState == .idle else { return nil }
+        guard AppContext.shared.recordingState == .idle,
+              !AppContext.shared.recordingStarting, !prerollStarting else { return nil }
         // Guest at the session cap: don't even silently pre-roll. The
         // detector then falls back to the visible offer, and accepting it
         // routes through `startRecording`, which surfaces the sign-in prompt.
@@ -174,6 +190,8 @@ final class RecordingController {
             status: .preroll
         )
         meeting.expectedOtherSpeakers = expectedOtherSpeakers
+        prerollStarting = true
+        defer { prerollStarting = false }
         do {
             try AppContext.shared.repo.insertMeeting(meeting)
             try await AppContext.shared.capture.start(meetingId: id, source: source)
@@ -546,21 +564,32 @@ extension RecordingController: CaptureEngineDelegate {
     }
     func captureEngine(_ engine: CaptureEngine, didFailWithError error: Error) {
         FileLogger.log("RecordingController: capture failed: \(error)")
-        // Whatever meeting was being recorded is now toast, flip its DB
-        // row to .failed so the UI never gets stuck on a green dot. The
-        // app crash recovery (`resetStuckMeetings` on launch) covers the
-        // scenario where the process dies before this delegate fires; this
-        // path covers the scenario where the process stays up but SCStream
-        // silently bails (most often: Screen Recording permission revoked
-        // mid-session, or the user logged out and back in).
-        if case .recording(let id, _) = AppContext.shared.recordingState {
-            if var meeting = try? AppContext.shared.repo.meeting(id: id) {
-                meeting.status = .failed
-                try? AppContext.shared.repo.updateMeeting(meeting)
-            }
+        // Go through the normal stop path so the capture is really torn
+        // down and whatever audio exists is finalised and transcribed. Just
+        // flipping the row to `.failed` and the state to `.idle` (the old
+        // behaviour) left the mic and the tap writing with no way to stop.
+        switch AppContext.shared.recordingState {
+        case .recording:
+            present(error: "Capture failed: \(error.localizedDescription)")
+            Task { @MainActor in await self.stopRecording() }
+        case .preroll:
+            Task { @MainActor in await self.discardPreroll() }
+        case .idle, .stopping:
+            break
         }
-        RecordingHUDPanel.shared.hide()
-        present(error: "Capture failed: \(error.localizedDescription)")
-        AppContext.shared.recordingState = .idle
+    }
+
+    func captureEngineVideoLost(_ engine: CaptureEngine, error: Error) {
+        guard case .recording = AppContext.shared.recordingState else { return }
+        FileLogger.log("RecordingController: screen video stopped mid-recording (\(error.localizedDescription)), audio continues")
+        if AppSettings.notificationsEnabled {
+            NotificationsService.post(
+                title: L.notif("notif_video_lost_title"),
+                body: L.notif("notif_video_lost_body"))
+        }
+        LibraryWindow.shared.postToast(
+            title: L.notif("notif_video_lost_title"),
+            body: L.notif("notif_video_lost_body"),
+            kind: "info")
     }
 }
