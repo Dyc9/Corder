@@ -75,7 +75,12 @@ final class NetworkMonitor {
         // same meeting on every online transition, an unbounded, paid
         // re-transcribe loop. `failedRetriableMeetingIds` already excludes
         // rows that exhausted their attempts.
-        let retriable = Set((try? repo.failedRetriableMeetingIds(maxAttempts: 3)) ?? [])
+        // Network failures get their own, larger budget: every start counts
+        // an attempt whatever the cause, so three runs while offline used to
+        // exhaust the shared budget of 3 and the meeting was never retried
+        // again on its own. Still bounded, and only for network-class errors
+        // (checked below), so a permanently failing meeting can't loop.
+        let retriable = Set((try? repo.failedRetriableMeetingIds(maxAttempts: 8)) ?? [])
         for m in meetings {
             guard m.status == .failed, retriable.contains(m.id) else { continue }
             guard let err = TranscriptionErrors.read(meetingId: m.id) else { continue }

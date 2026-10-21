@@ -178,3 +178,67 @@ final class DatabaseOpenTests: XCTestCase {
         XCTAssertNotNil(try MeetingRepository(dbq: try Database.open(path: path)).meeting(id: "keep"))
     }
 }
+
+/// CR-3: the streamed window RMS matches the old whole-file computation.
+final class StreamedRMSTests: XCTestCase {
+    func test_streamedWindowRMS_matchesWholeFile() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("corder-rms-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let fmt = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+        let frames = 300_017   // not a multiple of the 64k block
+        do {
+            let f = try AVAudioFile(forWriting: url, settings: fmt.settings)
+            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames))!
+            buf.frameLength = AVAudioFrameCount(frames)
+            var seed: UInt64 = 42
+            for c in 0..<2 {
+                for i in 0..<frames {
+                    seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                    let r = Float(Int64(bitPattern: seed >> 11) % 2000) / 2000
+                    buf.floatChannelData![c][i] = r * (i % 40_000 < 20_000 ? 0.5 : 0.01)
+                }
+            }
+            try f.write(from: buf)
+        }
+        let file = try AVAudioFile(forReading: url)
+        let window = 1440, hop = 480
+        let got = try XCTUnwrap(VoiceActivityDetector.streamedWindowRMS(file, windowFrames: window, hopFrames: hop))
+        XCTAssertEqual(got.frames, frames)
+
+        let whole = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(frames))!
+        file.framePosition = 0
+        try file.read(into: whole)
+        var want: [Float] = []
+        var pos = 0
+        while pos + window <= frames {
+            var sum: Float = 0
+            for c in 0..<2 { for i in 0..<window { let v = whole.floatChannelData![c][pos + i]; sum += v * v } }
+            want.append(sqrtf(sum / Float(window * 2)))
+            pos += hop
+        }
+        XCTAssertEqual(got.values.count, want.count)
+        for (a, b) in zip(got.values, want) { XCTAssertEqual(a, b, accuracy: max(1e-6, b * 1e-4)) }
+    }
+}
+
+extension StreamedRMSTests {
+    /// CR-3: the block-wise 16 kHz mono decode keeps the whole length and level.
+    func test_echoSuppressorLoad_streamsWholeFile() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("corder-aec-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let fmt = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+        let frames = 48_000 * 7 / 2   // 3.5 s, several 64k blocks
+        do {
+            let f = try AVAudioFile(forWriting: url, settings: fmt.settings)
+            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames))!
+            buf.frameLength = AVAudioFrameCount(frames)
+            for c in 0..<2 { for i in 0..<frames { buf.floatChannelData![c][i] = 0.5 * sinf(Float(i) * 2 * .pi * 440 / 48_000) } }
+            try f.write(from: buf)
+        }
+        let mono = try XCTUnwrap(EchoSuppressor.loadMono16k(url))
+        XCTAssertEqual(Double(mono.count), 56_000, accuracy: 200)
+        let mid = mono[8_000..<48_000]
+        let rms = sqrtf(mid.reduce(0) { $0 + $1 * $1 } / Float(mid.count))
+        XCTAssertEqual(rms, 0.3536, accuracy: 0.01)
+    }
+}

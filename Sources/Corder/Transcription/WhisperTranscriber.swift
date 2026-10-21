@@ -285,7 +285,7 @@ enum WhisperTranscriber {
         // OpenAI key). Only when there's no Supabase session do we
         // require the legacy local key, keeps `swift test` / dev
         // shells running without a sign-in.
-        let signedIn = await Self.hasSupabaseSession()
+        let signedIn = try await Self.hasSupabaseSession()
         let key = apiKey ?? ""
         if !signedIn && key.isEmpty { throw WhisperError.noKey }
         guard FileManager.default.fileExists(atPath: audioURL.path) else {
@@ -681,7 +681,7 @@ enum WhisperTranscriber {
         // OpenAI / Groq key server-side and gates by `app_metadata.tier`.
         // Otherwise we hit OpenAI directly with the user's local
         // key (the legacy path; still used during sign-out / dev).
-        let route = await Self.resolveRoute(apiKey: apiKey, backend: backend)
+        let route = try await Self.resolveRoute(apiKey: apiKey, backend: backend)
 
         let boundary = "----CorderWhisperBoundary-\(UUID().uuidString)"
         guard let endpointURL = URL(string: route.endpoint) else {
@@ -752,8 +752,21 @@ enum WhisperTranscriber {
         var data = Data()
         var resp: URLResponse?
         let maxAttempts = 5
+        var dropRetries = 0
         for attempt in 1...maxAttempts {
-            let (d, r) = try await URLSession.shared.data(for: req)
+            let d: Data, r: URLResponse
+            do {
+                (d, r) = try await Self.transcribeSession.data(for: req)
+            } catch let err as URLError where (err.code == .networkConnectionLost || err.code == .timedOut) && dropRetries < 2 && attempt < maxAttempts {
+                // A dropped connection on a multi-MB POST (Wi-Fi blip, sleep)
+                // used to leave the loop at once and push the chunk to the
+                // local fallback, failing the track when no model is on disk.
+                dropRetries += 1
+                let wait = Double(dropRetries * 2) * Double.random(in: 0.5...1.5)
+                FileLogger.log("WhisperTranscriber: \(err.code == .timedOut ? "timed out" : "connection lost"), retry \(dropRetries)/2 after \(String(format: "%.1f", wait))s")
+                try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                continue
+            }
             data = d
             resp = r
             let status = (r as? HTTPURLResponse)?.statusCode ?? 0
@@ -786,7 +799,9 @@ enum WhisperTranscriber {
             }
             // Otherwise exponential backoff (1s, 2s, 4s, 8s), never longer
             // than 30 s for a single wait whatever the header says.
-            let waitSec = min(30, max(headerWait, pow(2.0, Double(attempt - 1))))
+            // ±50 % jitter so clients that hit the same Worker cold start
+            // don't all come back on the same second.
+            let waitSec = min(30, max(headerWait, pow(2.0, Double(attempt - 1)) * Double.random(in: 0.5...1.5)))
             FileLogger.log("WhisperTranscriber: \(status) \(isRateLimit ? "rate-limit" : "transient server"), retry \(attempt)/\(maxAttempts - 1) after \(waitSec)s")
             try await Task.sleep(nanoseconds: UInt64(waitSec * 1_000_000_000))
         }
@@ -1097,6 +1112,18 @@ enum WhisperTranscriber {
 
     // MARK: - Errors / network
 
+    /// Own session for uploads: `URLSession.shared` has a 7-day resource
+    /// timeout, so a connection that trickles bytes (never idle long enough
+    /// for the per-request timeout) held the single Whisper permit, and with
+    /// it every meeting's transcription, indefinitely.
+    static let transcribeSession: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.timeoutIntervalForRequest = 120
+        c.timeoutIntervalForResource = 15 * 60
+        c.waitsForConnectivity = false
+        return URLSession(configuration: c)
+    }()
+
     private static func isNetworkError(_ err: URLError) -> Bool {
         switch err.code {
         case .notConnectedToInternet,
@@ -1104,7 +1131,12 @@ enum WhisperTranscriber {
              .timedOut,
              .cannotFindHost,
              .cannotConnectToHost,
-             .dataNotAllowed:
+             .dataNotAllowed,
+             .dnsLookupFailed,
+             .internationalRoamingOff,
+             .cannotLoadFromNetwork,
+             .secureConnectionFailed,          // captive portal (hotel Wi-Fi)
+             .serverCertificateUntrusted:
             return true
         default:
             return false
@@ -1168,8 +1200,8 @@ enum WhisperTranscriber {
         let endpoint: String
         let authHeader: String
     }
-    private static func resolveRoute(apiKey: String, backend: Backend = .openai) async -> Route {
-        let jwt = await Self.currentJWT()
+    private static func resolveRoute(apiKey: String, backend: Backend = .openai) async throws -> Route {
+        let jwt = try await Self.currentJWT()
         if !jwt.isEmpty {
             return Route(endpoint: backend.proxyPath, authHeader: "Bearer \(jwt)")
         }
@@ -1182,16 +1214,31 @@ enum WhisperTranscriber {
     /// Pulls the current Supabase access token off the main actor.
     /// The Supabase SDK's session accessor is async; we wrap in
     /// `try?` so a signed-out build just returns "".
-    private static func currentJWT() async -> String {
+    private static func currentJWT() async throws -> String {
         // The ASYNC session accessor refreshes an expired access token before
         // returning; `currentSession` hands back whatever is in memory, and
         // after an hour idle that token is dead — the Worker then 401s the
         // proxy call (same stale-capture bug as ShareService, 2026-09-08).
         // Signed out → throws → "".
-        (try? await SupabaseClientHolder.shared.auth.session)?.accessToken ?? ""
+        //
+        // A refresh that fails for a transient reason (offline, DNS, 5xx,
+        // the Mac just woke up) while the user IS signed in is a network
+        // error, not "no key": it used to become "" and surface as "OpenAI
+        // API key is not configured" (or a 401 "billing" off the direct
+        // route), and the meeting was never retried when the network came
+        // back. `.network` is what NetworkMonitor retries.
+        do {
+            return try await SupabaseClientHolder.shared.auth.session.accessToken
+        } catch {
+            let hasIdentity = AppSettings.isSignedIn || SupabaseClientHolder.shared.auth.currentUser != nil
+            if hasIdentity && !AuthSessionLoss.isDefinitive(error) {
+                throw WhisperError.network("No internet connection: couldn't refresh the sign-in (\(error.localizedDescription)).")
+            }
+            return ""
+        }
     }
-    private static func hasSupabaseSession() async -> Bool {
-        await !Self.currentJWT().isEmpty
+    private static func hasSupabaseSession() async throws -> Bool {
+        try await !Self.currentJWT().isEmpty
     }
 }
 

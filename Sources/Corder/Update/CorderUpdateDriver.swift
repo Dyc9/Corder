@@ -114,6 +114,7 @@ final class CorderUpdateDriver: NSObject, SPUUserDriver {
                     body: L.notif("notif_update_recording_body"),
                     kind: "error")
                 reply(.dismiss)
+                self?.armFreshCheckAfterDismiss()
                 return
             }
             FileLogger.log("UpdateDriver: onPrimary(showUpdateFound) phase=\(phase) → reply(.install)")
@@ -280,6 +281,7 @@ final class CorderUpdateDriver: NSObject, SPUUserDriver {
                 body: L.notif("notif_update_recording_body"),
                 kind: "error")
             reply(.dismiss)
+            armFreshCheckAfterDismiss()
             return
         }
         bridge.onDismiss = { reply(.dismiss) }
@@ -287,6 +289,19 @@ final class CorderUpdateDriver: NSObject, SPUUserDriver {
                   statusLine: "Installing. Corder will relaunch.",
                   showsProgress: true, progress: 1)
         reply(.install)
+    }
+
+    /// After a deferred `reply(.dismiss)` (recording in progress) that
+    /// Sparkle session is over; calling its `reply` again from the still-
+    /// wired buttons is undefined. The next Install click starts a fresh,
+    /// user-initiated check instead, which arrives back here with a new
+    /// reply (and re-checks the recording guard).
+    private func armFreshCheckAfterDismiss() {
+        bridge.onPrimary = {
+            FileLogger.log("UpdateDriver: Install after a deferred update, starting a fresh check")
+            UpdateController.shared.checkForUpdates(nil)
+        }
+        bridge.onDismiss = { }
     }
 
     // MARK: - Installing

@@ -152,7 +152,10 @@ final class TranscriptionPipeline {
             // the folder (see `RecordingDirNaming`); apply it now. No-op
             // when the folder already matches the title.
             RecordingDirNaming.renameToTitled(repo: AppContext.shared.repo, meetingId: meetingId)
-            if self.taskGen[meetingId] == gen { self.activeTasks[meetingId] = nil }
+            if self.taskGen[meetingId] == gen {
+                self.activeTasks[meetingId] = nil
+                self.taskGen[meetingId] = nil
+            }
         }
         activeTasks[meetingId] = task
         return task
@@ -167,7 +170,7 @@ final class TranscriptionPipeline {
     /// delete it). No-op when nothing runs.
     func cancelIfRunning(meetingId: String) {
         guard let task = activeTasks[meetingId] else { return }
-        FileLogger.log("cancelIfRunning(): cancelling transcription for \(meetingId) (meeting is being deleted)")
+        FileLogger.log("cancelIfRunning(): cancelling transcription for \(meetingId)")
         task.cancel()
     }
 
@@ -249,6 +252,10 @@ final class TranscriptionPipeline {
                                                message: "Transcription took too long and was stopped. Please try again.")
                     do { try repo.setStatus(meetingId: meetingId, status: .failed) }
                     catch { FileLogger.log("watchdog: setStatus(.failed) failed for \(meetingId): \(error)") }
+                    // Also cancel the run itself: marking the row failed left
+                    // the stuck task holding the process-wide upload permit,
+                    // which stalled every other meeting's transcription.
+                    TranscriptionPipeline.shared.cancelIfRunning(meetingId: meetingId)
                 }
             }
         }
@@ -1256,6 +1263,14 @@ final class TranscriptionPipeline {
             // who never sends a bug report (a new signup whose first two
             // recordings failed, July 2026) left no trace of WHY. No user
             // content in the message, only the error description.
+            // A raw URLError (captive portal, TLS, DNS) used to slip past
+            // every `catch let err as WhisperError` and left no recorded
+            // reason, so NetworkMonitor never retried it when the network
+            // came back. Record it in the wording the monitor matches.
+            if TranscriptionErrors.read(meetingId: meetingId) == nil, let urlErr = error as? URLError {
+                TranscriptionErrors.record(meetingId: meetingId,
+                                           message: "network error: \(urlErr.localizedDescription)")
+            }
             let reason = TranscriptionErrors.read(meetingId: meetingId) ?? String(describing: error)
             let mid = meetingId
             Task { @MainActor in SupabaseSync.setLastError(String(reason.prefix(400)), meetingId: mid) }
@@ -1549,31 +1564,9 @@ final class TranscriptionPipeline {
     /// dual-track files share one comparable time grid regardless of their
     /// individual rates. nil on read error.
     nonisolated static func frameRMS(_ url: URL, hopMs: Int = 100) -> [Float]? {
-        guard let file = try? AVAudioFile(forReading: url) else { return nil }
-        let format = file.processingFormat
-        let sr = format.sampleRate
-        guard sr > 0, file.length > 0 else { return [] }
-        let total = AVAudioFrameCount(file.length)
-        guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: total),
-              (try? file.read(into: buf, frameCount: total)) != nil,
-              let chans = buf.floatChannelData else { return nil }
-        let frames = Int(buf.frameLength)
-        let chCount = Int(format.channelCount)
-        let hop = max(1, Int(Double(hopMs) * sr / 1000.0))
-        var out: [Float] = []
-        out.reserveCapacity(frames / hop + 1)
-        var pos = 0
-        while pos < frames {
-            let end = min(pos + hop, frames)
-            var sumSq: Float = 0
-            for ch in 0..<chCount {
-                let d = chans[ch]
-                for i in pos..<end { sumSq += d[i] * d[i] }
-            }
-            out.append(sqrtf(sumSq / Float(max(1, (end - pos) * chCount))))
-            pos += hop
-        }
-        return out
+        // Same per-hop RMS, streamed: the whole-file read was ~2.7 GB for a
+        // 2-hour 48 kHz stereo float system.wav.
+        streamedFrameRMS(url, hopMs: hopMs)
     }
 
     /// Cross-track dominance gate. Dual-track bleed (mic hears the far end

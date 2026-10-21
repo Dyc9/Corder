@@ -176,9 +176,13 @@ final class RecordingHUDPanel {
         presentation.dismissing = true
         window = nil          // re-entrancy guard; `panel` keeps it alive
         removeCursorMonitor()
+        let retiring = delegate
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             panel.orderOut(nil)
-            self?.delegate = nil
+            // Only drop the delegate we retired: a Stop→Start inside these
+            // 0.45 s already installed a new one for the new panel, and
+            // releasing it lost the remembered HUD position.
+            if let self, self.delegate === retiring { self.delegate = nil }
             RecordingLevelMeter.shared.reset()
         }
     }

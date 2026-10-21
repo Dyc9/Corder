@@ -224,26 +224,49 @@ enum EchoSuppressor {
 
     // MARK: - WAV I/O
 
-    private static func loadMono16k(_ url: URL) -> [Float]? {
+    /// Decoded to 16 kHz mono in 64k-frame blocks through one converter
+    /// that pulls from the file as it goes. The old version read the whole
+    /// track into a single native-format buffer first (~2.7 GB for 2 h of
+    /// 48 kHz stereo float) and converted it in one pull, which on long
+    /// files can also come back as zeros and silently disable the
+    /// suppressor (the pattern AudioMixer documents).
+    static func loadMono16k(_ url: URL) -> [Float]? {
         guard let f = try? AVAudioFile(forReading: url) else { return nil }
         let inFmt = f.processingFormat
-        guard f.length > 0,
-              let inBuf = AVAudioPCMBuffer(pcmFormat: inFmt, frameCapacity: AVAudioFrameCount(f.length)),
-              (try? f.read(into: inBuf)) != nil,
+        let block: AVAudioFrameCount = 65_536
+        guard f.length > 0, inFmt.sampleRate > 0,
               let outFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),
-              let conv = AVAudioConverter(from: inFmt, to: outFmt) else { return nil }
-        let outCap = AVAudioFrameCount(Double(f.length) * sampleRate / inFmt.sampleRate + 4096)
-        guard let outBuf = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: outCap) else { return nil }
-        var fed = false
-        var err: NSError?
-        conv.convert(to: outBuf, error: &err) { _, status in
-            if fed { status.pointee = .noDataNow; return nil }
-            fed = true; status.pointee = .haveData; return inBuf
+              let conv = AVAudioConverter(from: inFmt, to: outFmt),
+              let inBuf = AVAudioPCMBuffer(pcmFormat: inFmt, frameCapacity: block),
+              let outBuf = AVAudioPCMBuffer(pcmFormat: outFmt,
+                                            frameCapacity: AVAudioFrameCount(Double(block) * sampleRate / inFmt.sampleRate) + 4096)
+        else { return nil }
+        var out: [Float] = []
+        out.reserveCapacity(Int(Double(f.length) * sampleRate / inFmt.sampleRate) + 4096)
+        var readFailed = false
+        while true {
+            outBuf.frameLength = 0
+            var err: NSError?
+            let status = conv.convert(to: outBuf, error: &err) { _, st in
+                let remaining = f.length - f.framePosition
+                guard remaining > 0 else { st.pointee = .endOfStream; return nil }
+                do {
+                    try f.read(into: inBuf, frameCount: AVAudioFrameCount(min(Int64(block), remaining)))
+                } catch {
+                    readFailed = true
+                    st.pointee = .endOfStream
+                    return nil
+                }
+                st.pointee = .haveData
+                return inBuf
+            }
+            if err != nil || status == .error || readFailed { return nil }
+            if outBuf.frameLength > 0, let p = outBuf.floatChannelData?[0] {
+                out.append(contentsOf: UnsafeBufferPointer(start: p, count: Int(outBuf.frameLength)))
+            }
+            if status == .endOfStream || (status == .inputRanDry && outBuf.frameLength == 0) { break }
         }
-        if err != nil { return nil }
-        let count = Int(outBuf.frameLength)
-        guard count > 0, let p = outBuf.floatChannelData?[0] else { return nil }
-        return Array(UnsafeBufferPointer(start: p, count: count))
+        return out.isEmpty ? nil : out
     }
 
     private static func writeMono16k(_ samples: [Float], to url: URL) -> Bool {

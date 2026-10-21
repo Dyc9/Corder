@@ -860,13 +860,16 @@ enum LocalWhisperTranscriber {
     ) async throws -> T {
         let once = DeadlineOnce()
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
+            let sleeper = Task.detached {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                if once.claim() { cont.resume(throwing: DeadlineError.timedOut) }
+            }
             Task.detached {
                 do { let r = try await op(); if once.claim() { cont.resume(returning: r) } }
                 catch { if once.claim() { cont.resume(throwing: error) } }
-            }
-            Task.detached {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                if once.claim() { cont.resume(throwing: DeadlineError.timedOut) }
+                // The op won (or lost): the deadline timer has nothing left to
+                // do, don't leave it sleeping for up to 25 minutes.
+                sleeper.cancel()
             }
         }
     }
@@ -1144,8 +1147,12 @@ enum LocalWhisperTranscriber {
             // WhisperKit sometimes surfaces them as NSError with the
             // localized "operation couldn't be completed" wording when
             // a chunk gets killed mid-flight.
+            // Only when the task really was cancelled: "operation couldn't be
+            // completed" is the generic NSError wording for ANY failure, and
+            // turning a real decoder failure into a silent cancel left the
+            // meeting stuck in "transcribing" with no error.
             let raw = error.localizedDescription.lowercased()
-            if raw.contains("cancel") || raw.contains("operation couldn't be completed") {
+            if Task.isCancelled && (raw.contains("cancel") || raw.contains("operation couldn't be completed")) {
                 throw CancellationError()
             }
             throw LocalWhisperError.transcribeFailed(error.localizedDescription)

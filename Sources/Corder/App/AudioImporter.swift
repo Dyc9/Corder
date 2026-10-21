@@ -172,6 +172,16 @@ enum AudioImporter {
         writer.startSession(atSourceTime: .zero)
 
         var frames: Int64 = 0
+        // Any failure below must release the reader and the writer (and the
+        // half-written file), not leave them running until deinit.
+        var finished = false
+        defer {
+            if !finished {
+                if reader.status == .reading { reader.cancelReading() }
+                if writer.status == .writing { writer.cancelWriting() }
+                try? FileManager.default.removeItem(at: output)
+            }
+        }
         while let sample = readerOut.copyNextSampleBuffer() {
             try Task.checkCancellation()
             while !writerIn.isReadyForMoreMediaData {
@@ -185,6 +195,7 @@ enum AudioImporter {
         await writer.finishWriting()
         if writer.status != .completed { throw writer.error ?? ImportError.unwritable }
         guard frames > 0 else { throw ImportError.noAudioTrack }
+        finished = true
         return frames * 1000 / 16_000
     }
 

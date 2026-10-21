@@ -365,6 +365,9 @@ final class SystemAudioTap {
         // Serialise teardown on the watchdog queue so it can't race a
         // concurrent watchdog rebuild mutating the same Core Audio objects.
         watchdogQueue.sync { teardownCoreAudio() }
+        // The IOProc block runs on `ioQueue` and reads `onAudio`; let any
+        // callback already in flight finish before the closure is released.
+        ioQueue.sync { }
         onAudio = nil
         FileLogger.log("SystemAudioTap: stopped")
     }

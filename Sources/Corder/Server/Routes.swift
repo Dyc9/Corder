@@ -1786,6 +1786,7 @@ enum Routes {
         }
         _ = cancelled.wait(timeout: .now() + 2)
         MediaExporter.removeExports(for: id)
+        TranscriptionErrors.clear(meetingId: id)
         do {
             // Best-effort cleanup of cloud archive (fire-and-forget).
             if let m = try? repo.meeting(id: id) {
@@ -2158,16 +2159,26 @@ enum Routes {
                 ]) { _ in }
             }
 
+            // At most 8 MiB per response. WebKit and AVFoundation ask for
+            // `bytes=0-` (the whole rest of the file) on every seek, and the
+            // old code read all of it into memory each time; a shorter 206
+            // is legal and the player just asks for the next range.
+            let maxChunk = Int64(8 * 1024 * 1024)
+            let end = min(Int64(r.end), Int64(r.start) + maxChunk - 1)
+            let length = end - Int64(r.start) + 1
             let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
             try handle.seek(toOffset: UInt64(r.start))
-            let chunk = handle.readData(ofLength: Int(r.length))
-            try? handle.close()
+            // `read(upToCount:)` throws a Swift error on I/O failure (an
+            // unplugged external disk); `readData(ofLength:)` raised an
+            // Objective-C exception that took the whole app down.
+            let chunk = try handle.read(upToCount: Int(length)) ?? Data()
 
             return .raw(206, "Partial Content", [
                 "Content-Type": contentType,
                 "Accept-Ranges": "bytes",
-                "Content-Range": "bytes \(r.start)-\(r.end)/\(size)",
-                "Content-Length": "\(r.length)"
+                "Content-Range": "bytes \(r.start)-\(Int64(r.start) + Int64(chunk.count) - 1)/\(size)",
+                "Content-Length": "\(chunk.count)"
             ]) { try $0.write(chunk) }
         } catch {
             return .internalServerError

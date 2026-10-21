@@ -16,6 +16,19 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.87] - 2026-10-21
+
+### Fixed
+
+- Long meetings use far less memory while they are processed, so a two- or three-hour recording no longer risks Corder being closed by macOS on Macs with 8 GB.
+- A meeting that failed while you were offline, or right after the Mac woke up, is now retried automatically once you are back online, instead of saying the API key is missing.
+- A brief Wi-Fi drop while uploading no longer fails the transcription; Corder retries that part. Hotel and captive-portal networks are recognised as "offline" too.
+- A stuck upload can no longer hold up the transcription of every other meeting.
+- Scrubbing through a long recording no longer loads the whole file into memory each time, and an unplugged external disk can't crash the player.
+- Pressing Install on an update you postponed during a recording works again.
+- The recording pill remembers where you dragged it even after a quick stop and restart.
+- Dropping a file that can't be read no longer leaves a half-converted copy behind.
+
 ## [0.15.86] - 2026-10-21
 
 ### Fixed

@@ -76,6 +76,7 @@ final class CaptureEngine: NSObject {
     /// config-change notification the re-tap path listens for.
     nonisolated(unsafe) private var lastMicBufferAt = Date()
     private var micWatchdog: Task<Void, Never>?
+    private var pendingMicRetry: DispatchWorkItem?
     private var lastWatchdogRetap = Date.distantPast
 
     private func startMicWatchdog() {
@@ -946,6 +947,8 @@ final class CaptureEngine: NSObject {
         }
         micWatchdog?.cancel()
         micWatchdog = nil
+        pendingMicRetry?.cancel()
+        pendingMicRetry = nil
         FileLogger.log("CaptureEngine.stop: complete")
         delegate?.captureEngine(self, didStopMeeting: id)
 
@@ -1258,6 +1261,8 @@ extension CaptureEngine: SCStreamOutput {
         }
         audioEngine = newEngine
         micReconfigAttempts = 0
+        pendingMicRetry?.cancel()
+        pendingMicRetry = nil
         // Re-arm the config observer on the NEW engine (the old one was its
         // notification object, so it would never fire again otherwise).
         if let observer = micConfigObserver { NotificationCenter.default.removeObserver(observer) }
@@ -1280,9 +1285,16 @@ extension CaptureEngine: SCStreamOutput {
         guard isRecording, !tearingDown else { micReconfigAttempts = 0; return }
         micReconfigAttempts += 1
         let delay = micReconfigAttempts <= 8 ? 0.45 : 2.0
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        // One pending retry at a time: every config notification used to
+        // start its own chain, and a stale retry firing after a success tore
+        // down the working engine.
+        pendingMicRetry?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingMicRetry = nil
             self?.handleMicConfigChange()
         }
+        pendingMicRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     /// Tap-buffer sink, hopped to the main actor (mirrors the old

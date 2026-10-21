@@ -68,45 +68,11 @@ enum VoiceActivityDetector {
         let sampleRate = format.sampleRate
         guard sampleRate > 0, file.length > 0 else { return [] }
 
-        let totalFrames = AVAudioFrameCount(file.length)
-        guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: totalFrames) else { return nil }
-        do {
-            try file.read(into: buf, frameCount: totalFrames)
-        } catch {
-            return nil
-        }
-        guard let channels = buf.floatChannelData else { return nil }
-
-        let frames = Int(buf.frameLength)
-        let channelCount = Int(format.channelCount)
         let windowFrames = max(1, Int(Double(config.windowMs) * sampleRate / 1000.0))
         let hopFrames = max(1, Int(Double(config.hopMs) * sampleRate / 1000.0))
-
-        // Per-window RMS. We mark each window as voiced/silent against
-        // the threshold, then collapse into [SpeechSegment] in a second
-        // pass that handles min-speech / max-gap.
-        var voiced: [Bool] = []
-        voiced.reserveCapacity(frames / hopFrames + 1)
-
-        var pos = 0
-        while pos + windowFrames <= frames {
-            var sumSq: Float = 0
-            // Mix channels into a single RMS by averaging |sample| across
-            // channels at each frame. Cheaper than computing per-channel
-            // RMS and taking the max; results in practice are equivalent
-            // for our inputs (mic = mono, system = stereo with near-
-            // identical content).
-            for ch in 0..<channelCount {
-                let data = channels[ch]
-                for i in 0..<windowFrames {
-                    let s = data[pos + i]
-                    sumSq += s * s
-                }
-            }
-            let rms = sqrtf(sumSq / Float(windowFrames * channelCount))
-            voiced.append(rms >= config.rmsThreshold)
-            pos += hopFrames
-        }
+        guard let series = streamedWindowRMS(file, windowFrames: windowFrames, hopFrames: hopFrames) else { return nil }
+        let frames = series.frames
+        let voiced = series.values.map { $0 >= config.rmsThreshold }
 
         return collapse(voiced: voiced,
                         hopMs: Int64(config.hopMs),
@@ -114,6 +80,52 @@ enum VoiceActivityDetector {
                         maxGapMs: config.maxGapMs,
                         paddingMs: config.paddingMs,
                         totalDurationMs: Int64(Double(frames) / sampleRate * 1000.0))
+    }
+
+    /// RMS of each `windowFrames` window, stepping `hopFrames`, over every
+    /// channel of `file`, the same numbers the old whole-file loop produced,
+    /// but read in 64k-frame blocks. Reading the whole file into one buffer
+    /// cost ~2.7 GB for a 2-hour 48 kHz stereo float track, several times
+    /// per transcription (OOM / jetsam on 8 GB Macs).
+    static func streamedWindowRMS(_ file: AVAudioFile, windowFrames: Int,
+                                  hopFrames: Int) -> (values: [Float], frames: Int)? {
+        let format = file.processingFormat
+        let channelCount = Int(format.channelCount)
+        let block: AVAudioFrameCount = 65_536
+        guard channelCount > 0, windowFrames > 0, hopFrames > 0,
+              let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: block) else { return nil }
+        var energy: [Float] = []      // per-frame sum of squares, frames base..<total
+        var base = 0
+        var pos = 0                   // absolute start of the next window
+        var total = 0
+        var out: [Float] = []
+        file.framePosition = 0
+        // Read only what is left: AVAudioFile throws, rather than returning
+        // zero frames, on a read at the end of the file.
+        while file.framePosition < file.length {
+            let want = AVAudioFrameCount(min(Int64(block), file.length - file.framePosition))
+            do { try file.read(into: buf, frameCount: want) } catch { return nil }
+            let n = Int(buf.frameLength)
+            if n == 0 { break }
+            guard let data = buf.floatChannelData else { return nil }
+            energy.reserveCapacity(energy.count + n)
+            for i in 0..<n {
+                var e: Float = 0
+                for c in 0..<channelCount { let v = data[c][i]; e += v * v }
+                energy.append(e)
+            }
+            total += n
+            while pos + windowFrames <= total {
+                let start = pos - base
+                var sum: Float = 0
+                for i in start..<(start + windowFrames) { sum += energy[i] }
+                out.append(sqrtf(sum / Float(windowFrames * channelCount)))
+                pos += hopFrames
+            }
+            let consumed = min(max(0, pos - base), energy.count)
+            if consumed > 0 { energy.removeFirst(consumed); base += consumed }
+        }
+        return (out, total)
     }
 
     /// Speech-energy summary used to CHOOSE between the two system
@@ -130,35 +142,14 @@ enum VoiceActivityDetector {
         let format = file.processingFormat
         let sampleRate = format.sampleRate
         guard sampleRate > 0, file.length > 0 else { return (0, 0) }
-        let totalFrames = AVAudioFrameCount(file.length)
-        guard let buf = AVAudioPCMBuffer(pcmFormat: format,
-                                         frameCapacity: totalFrames) else { return nil }
-        do { try file.read(into: buf, frameCount: totalFrames) } catch { return nil }
-        guard let channels = buf.floatChannelData else { return nil }
-
-        let frames = Int(buf.frameLength)
-        let channelCount = Int(format.channelCount)
         let windowFrames = max(1, Int(Double(config.windowMs) * sampleRate / 1000.0))
         let hopFrames = max(1, Int(Double(config.hopMs) * sampleRate / 1000.0))
-
+        guard let series = streamedWindowRMS(file, windowFrames: windowFrames, hopFrames: hopFrames) else { return nil }
         var voicedWindows = 0
         var voicedRmsSum: Float = 0
-        var pos = 0
-        while pos + windowFrames <= frames {
-            var sumSq: Float = 0
-            for ch in 0..<channelCount {
-                let data = channels[ch]
-                for i in 0..<windowFrames {
-                    let s = data[pos + i]
-                    sumSq += s * s
-                }
-            }
-            let rms = sqrtf(sumSq / Float(windowFrames * channelCount))
-            if rms >= config.rmsThreshold {
-                voicedWindows += 1
-                voicedRmsSum += rms
-            }
-            pos += hopFrames
+        for rms in series.values where rms >= config.rmsThreshold {
+            voicedWindows += 1
+            voicedRmsSum += rms
         }
         let voicedMs = Int64(voicedWindows) * Int64(config.hopMs)
         let mean = voicedWindows > 0 ? voicedRmsSum / Float(voicedWindows) : 0
@@ -173,29 +164,11 @@ enum VoiceActivityDetector {
         let format = file.processingFormat
         let sampleRate = format.sampleRate
         guard sampleRate > 0, file.length > 0 else { return ([], 0) }
-        let totalFrames = AVAudioFrameCount(file.length)
-        guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: totalFrames) else { return nil }
-        do { try file.read(into: buf, frameCount: totalFrames) } catch { return nil }
-        guard let channels = buf.floatChannelData else { return nil }
-        let frames = Int(buf.frameLength)
-        let channelCount = Int(format.channelCount)
         let windowFrames = max(1, Int(Double(config.windowMs) * sampleRate / 1000.0))
         let hopFrames = max(1, Int(Double(config.hopMs) * sampleRate / 1000.0))
-        var out: [Float] = []
-        out.reserveCapacity(frames / hopFrames + 1)
-        var pos = 0
-        while pos + windowFrames <= frames {
-            var sumSq: Float = 0
-            for ch in 0..<channelCount {
-                let data = channels[ch]
-                for i in 0..<windowFrames {
-                    let s = data[pos + i]
-                    sumSq += s * s
-                }
-            }
-            out.append(sqrtf(sumSq / Float(windowFrames * channelCount)))
-            pos += hopFrames
-        }
+        guard let series = streamedWindowRMS(file, windowFrames: windowFrames, hopFrames: hopFrames) else { return nil }
+        let out = series.values
+        let frames = series.frames
         return (out, Int64(Double(frames) / sampleRate * 1000.0))
     }
 
