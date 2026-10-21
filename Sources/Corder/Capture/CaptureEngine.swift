@@ -634,21 +634,16 @@ final class CaptureEngine: NSObject {
         // unplugged), we leave AVAudioEngine on the system default
         // identical to the pre-feature behaviour.
         FileLogger.log("CaptureEngine.start: system default input = \(AudioInputDevices.defaultInputSummary()), outputBT=\(outputBluetoothAtStart)")
+        // Creating the input node binds it to the default input, and on a
+        // Bluetooth headset that alone blocks ~3 s (it flips the headset to
+        // HFP; measured 3.1 s). Do it off the main thread, the 0.15.82 fix
+        // only moved the format query and the menu still froze.
+        let inputNode = await Self.offMain { engine.inputNode }
         if let chosenUID = AppSettings.micDeviceUID {
-            if let resolvedID = AudioInputDevices.apply(uid: chosenUID, to: engine) {
+            if let resolvedID = await Self.offMain({ AudioInputDevices.apply(uid: chosenUID, to: engine) }) {
                 FileLogger.log("CaptureEngine.start: mic device set to UID=\(chosenUID) (AudioDeviceID=\(resolvedID))")
             } else {
                 FileLogger.log("CaptureEngine.start: saved mic UID=\(chosenUID) not found / apply failed, falling back to system default")
-            }
-        } else if let wired = await Self.offMain({ AudioInputDevices.wiredReplacementForBluetoothDefault() }) {
-            // "Auto" + a Bluetooth default input: record the wired mic so the
-            // headset stays in A2DP (no ~3 s HFP switch at Start, no call-
-            // quality sound in the user's ears). An explicit pick, even a
-            // Bluetooth one, is always honoured above.
-            if AudioInputDevices.apply(uid: wired.uid, to: engine) != nil {
-                FileLogger.log("CaptureEngine.start: default input is Bluetooth, recording '\(wired.name)' [\(wired.transport ?? "?")] instead")
-            } else {
-                FileLogger.log("CaptureEngine.start: default input is Bluetooth, could not bind '\(wired.name)', using the default")
             }
         }
         // NOTE: auto-forcing the BT headset mic here (apply the BT input when
@@ -658,7 +653,6 @@ final class CaptureEngine: NSObject {
         // path has no retry (unlike handleMicConfigChange's backoff), so it
         // aborted the whole recording. Redo via the settle-retry path, not a
         // bare apply. The diagnostic line above stays for debugging.
-        let inputNode = engine.inputNode
         // NOTE: macOS Voice Processing (AEC) was tried here to cancel
         // speaker→mic echo, but it puts the whole audio session into VoIP
         // mode, on Bluetooth it forces the low-quality HFP/SCO route (the
@@ -685,8 +679,8 @@ final class CaptureEngine: NSObject {
             // capture beats the scary "couldn't start recording (-10868)"
             // popup. Skipped when the user has explicitly pinned a device.
             if attempt >= 3, !forcedBuiltIn, AppSettings.micDeviceUID == nil,
-               let builtIn = AudioInputDevices.builtInInput(),
-               AudioInputDevices.apply(uid: builtIn.uid, to: engine) != nil {
+               let builtIn = await Self.offMain({ AudioInputDevices.builtInInput() }),
+               await Self.offMain({ AudioInputDevices.apply(uid: builtIn.uid, to: engine) }) != nil {
                 forcedBuiltIn = true
                 FileLogger.log("CaptureEngine.start: forcing built-in mic '\(builtIn.name)' after \(attempt - 1) failed attempt(s) on the default input")
                 try? await Task.sleep(nanoseconds: 200_000_000)   // let it bind
@@ -1263,17 +1257,9 @@ extension CaptureEngine: SCStreamOutput {
         }
         let newEngine = AVAudioEngine()
         let chosenUID = AppSettings.micDeviceUID
-        let inputNode = newEngine.inputNode
+        let inputNode = await Self.offMain { newEngine.inputNode }   // ~3 s on Bluetooth, see start()
         let fmt = await Self.offMain { () -> AVAudioFormat in
-            if let chosenUID {
-                _ = AudioInputDevices.apply(uid: chosenUID, to: newEngine)
-            } else if let wired = AudioInputDevices.wiredReplacementForBluetoothDefault() {
-                // Headphones connected mid-recording became the default
-                // input: stay on the wired mic (see start()).
-                if AudioInputDevices.apply(uid: wired.uid, to: newEngine) != nil {
-                    FileLogger.log("CaptureEngine: mic config change, default input is Bluetooth, staying on '\(wired.name)'")
-                }
-            }
+            if let chosenUID { _ = AudioInputDevices.apply(uid: chosenUID, to: newEngine) }
             return inputNode.outputFormat(forBus: 0)
         }
         guard isRecording, !tearingDown else { return }

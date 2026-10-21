@@ -559,7 +559,7 @@ const en: Strings = {
   settings_pick_none: "No apps found",
   settings_pick_recent: "used mic",
   settings_mic_device: "Microphone",
-  settings_mic_device_desc: "Select input device which records your voice. On Auto, Bluetooth headphones are left alone and the Mac's microphone records you, so their sound stays clear and recording starts instantly.",
+  settings_mic_device_desc: "Select input device which records your voice",
   settings_mic_device_system: "Auto",
   settings_mic_device_empty: "No input devices found",
   settings_asr_label: "Transcription model",

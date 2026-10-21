@@ -120,6 +120,7 @@ final class TranscriptionPipeline {
     /// accepted: an API caller must never push a meeting onto a cloud
     /// provider the user's plan or setting doesn't use.
     private var forcedProvider: [String: TranscriptionProvider] = [:]
+    private var strictLocalMeetings: Set<String> = []
 
     @discardableResult
     func enqueue(meetingId: String, forceFresh: Bool = false, provider: TranscriptionProvider?) -> Task<Void, Never> {
@@ -314,7 +315,13 @@ final class TranscriptionPipeline {
         // (the user's preference is intact for next month), the
         // helper just stashes the runtime choice so every read
         // inside this method goes through `currentProvider`.
-        let userPick = forcedProvider.removeValue(forKey: meetingId) ?? AppSettings.transcriptionProvider
+        let forced = forcedProvider.removeValue(forKey: meetingId)
+        // An explicit on-device run (MCP "local") must never hand the audio
+        // to the cloud: no first-transcript bridge, no slow-Mac rescue, no
+        // "model unavailable" fallback. It waits for the model instead.
+        if forced == .whisperLocal { strictLocalMeetings.insert(meetingId) }
+        defer { strictLocalMeetings.remove(meetingId) }
+        let userPick = forced ?? AppSettings.transcriptionProvider
         var effective = userPick
         if userPick.usageClass == "advanced" {
             // No API key on disk for the chosen cloud provider →
@@ -2481,7 +2488,8 @@ final class TranscriptionPipeline {
             // free monthly cloud budget), so a guest has no cloud to fall back
             // to and waits for the model exactly as before.
             let localVariant = AppSettings.whisperLocalVariant
-            if !LocalWhisperTranscriber.isModelDownloaded(localVariant), AppSettings.isSignedIn {
+            let strictLocal = strictLocalMeetings.contains(meetingId)
+            if !LocalWhisperTranscriber.isModelDownloaded(localVariant), AppSettings.isSignedIn, !strictLocal {
                 let pct = LocalWhisperTranscriber.currentProgress(localVariant).map { Int($0 * 100) }
                 FileLogger.log("LocalWhisper: model still downloading (\(pct.map { "\($0)%" } ?? "queued")), transcribing this track in the cloud so the first transcript isn't blocked")
                 do {
@@ -2510,7 +2518,7 @@ final class TranscriptionPipeline {
                 return try await LocalWhisperTranscriber.transcribe(
                     audioURL: wavURL, mode: .single, variant: variant,
                     initialPrompt: prompt, onProgress: onProgress,
-                    slowRescue: Self.slowLocalRescue(wavURL: wavURL, onProgress: onProgress))
+                    slowRescue: strictLocal ? nil : Self.slowLocalRescue(wavURL: wavURL, onProgress: onProgress))
             } catch let err as LocalWhisperTranscriber.LocalWhisperError {
                 // Free cloud fallback (the audit's #1 safety net). The on-device
                 // model couldn't run on THIS Mac, a slow/old/8 GB cold compile
@@ -2522,7 +2530,7 @@ final class TranscriptionPipeline {
                 // signed-out guest has no JWT, so we nudge them to sign in. Don't
                 // pass a localFallbackVariant, local just failed, so a per-chunk
                 // "recover locally" would loop straight back into the failure.
-                guard err.isModelUnavailable else {
+                guard err.isModelUnavailable, !strictLocal else {
                     TranscriptionErrors.record(meetingId: meetingId, message: err.localizedDescription)
                     throw err
                 }

@@ -17,7 +17,9 @@ enum MCPTools {
             "description": """
                 Transcribe an audio or video file that is on this Mac (voice messages such as Telegram .ogg/.oga, \
                 m4a, mp3, wav, mp4, mov…) and save it as a new session in the user's Corder library, with speakers \
-                and timestamps. By default the on-device model is used and nothing leaves the Mac. Waits for the \
+                and timestamps. By default the on-device model transcribes it and the audio is not uploaded (the first \
+                run may first download the ~1.5 GB model; title and summary use Corder's text features as for any \
+                session). Waits for the \
                 transcript and returns it; for long files it may return while still transcribing, then call \
                 get_meeting with the returned id.
                 """,

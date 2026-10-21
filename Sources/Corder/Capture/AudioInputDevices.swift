@@ -131,7 +131,20 @@ enum AudioInputDevices {
             &id,
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
-        return status == noErr ? deviceID : nil
+        guard status == noErr else { return nil }
+        // The node keeps the PREVIOUS device's client format (e.g. 24 kHz
+        // from a Bluetooth default) while the new hardware runs at its own
+        // rate, and the input node can't resample, so `start()` throws
+        // -10868 on every attempt (reproduced 2026-10-21: in 48000 / out
+        // 24000). Re-align the output side of the input element to the new
+        // device's format.
+        var asbd = engine.inputNode.inputFormat(forBus: 0).streamDescription.pointee
+        if asbd.mSampleRate > 0 {
+            let fmtStatus = AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1,
+                                                 &asbd, UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
+            if fmtStatus != noErr { FileLogger.log("AudioInputDevices.apply: could not re-align the input format (\(fmtStatus))") }
+        }
+        return deviceID
     }
 
     /// Look up the live `AudioDeviceID` for a saved UID. Returns

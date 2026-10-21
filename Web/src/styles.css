@@ -70,6 +70,8 @@
   --danger: #e0655c;
   --status-ready: #46c08a;
   --status-external: #4b8ef5;
+  /* Selected-row fill for a session transcribed from a file (the avatar blue). */
+  --external-fill: #3b82f6;
   --status-warn: #d6a445;
   --status-fail: #e0655c;
   --tl-track: rgba(255, 255, 255, 0.08);
@@ -107,6 +109,19 @@
 /* Unseen-title accent green also collapses on the green fill, fall
    back to plain white so the bold weight stays visible. */
 .dark .meeting-item.unseen.active .meeting-title { color: #fff; }
+/* A session transcribed from a file (dropped, or from an AI assistant):
+   the selected fill is blue instead of green, matching its blue dot. */
+.dark .meeting-item.external.active {
+  background: var(--external-fill);
+  border-color: var(--external-fill);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--external-fill) 35%, transparent);
+}
+/* On the coloured fill the ready dot is white for every session (green or
+   blue would vanish into it); pinned gold too. `.sidebar` lifts this over
+   the pinned rules further down. The recording pulse stays red. */
+.dark .sidebar .meeting-item.active .status-dot.ready,
+.dark .sidebar .meeting-item.active.pinned .status-dot { background: #fff; }
+.dark .sidebar .meeting-item.active .status-dot.transcribing { border-color: #fff; }
 .dark .toolbar-icon-btn.active:hover {
   background: var(--accent-pressed);
   border-color: var(--accent-pressed);

@@ -16,6 +16,18 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.92] - 2026-10-21
+
+### Fixed
+
+- With Bluetooth headphones, recording could fail to start in 0.15.91 (most often during a call). The microphone choice is back to how it was in 0.15.90 while a better fix is finished.
+- Starting a recording or catching a call with Bluetooth headphones no longer freezes Corder's window and menu for a few seconds.
+- When an AI assistant asks Corder to transcribe a file on this Mac, the audio is never sent to the cloud, even while the on-device model is still downloading.
+
+### Changed
+
+- In the dark theme, a selected session that was transcribed from a file is highlighted in blue instead of green, and the dot of the selected session is white.
+
 ## [0.15.91] - 2026-10-21
 
 ### Changed
