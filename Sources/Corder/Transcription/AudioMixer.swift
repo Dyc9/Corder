@@ -277,14 +277,17 @@ enum AudioMixer {
                 let chunkSize = head[4..<8].withUnsafeBytes { $0.load(as: UInt32.self) }
                 if chunkID == Data("data".utf8) {
                     let dataStart = try handle.offset()
-                    let expectedDataSize = UInt32(totalSize - Int64(dataStart))
+                    // Clamped, not trapping: a >4 GiB file can't state its
+                    // size in 32 bits (UInt32(_:) crashed here, every launch,
+                    // as recovery re-ran the same meeting).
+                    let expectedDataSize = UInt32(clamping: totalSize - Int64(dataStart))
                     if chunkSize == expectedDataSize { return true }
                     // 1) data chunk size lives at the 4 bytes *before* dataStart.
                     try handle.seek(toOffset: dataStart - 4)
                     var leData = expectedDataSize
                     try handle.write(contentsOf: withUnsafeBytes(of: &leData) { Data($0) })
                     // 2) RIFF size = total file size - 8.
-                    var leRiff = UInt32(totalSize - 8)
+                    var leRiff = UInt32(clamping: totalSize - 8)
                     try handle.seek(toOffset: 4)
                     try handle.write(contentsOf: withUnsafeBytes(of: &leRiff) { Data($0) })
                     return true

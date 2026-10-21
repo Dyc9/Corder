@@ -94,6 +94,9 @@ final class SystemAudioTap {
     // that stays silent while audio is actually playing.
     private let stateLock = NSLock()
     private var gotFirstBuffer = false
+    /// `systemUptime` of the latest IOProc buffer, for the mid-recording
+    /// heartbeat in the watchdog.
+    private var lastBufferUptime: TimeInterval = 0
     private var generation = 0
     private var restarts = 0
     /// The last watchdog check found nothing playing. The first check that
@@ -144,12 +147,35 @@ final class SystemAudioTap {
     private func armWatchdog(generation gen: Int) {
         watchdogQueue.asyncAfter(deadline: .now() + watchdogDelay) { [weak self] in
             guard let self = self else { return }
+            // Heartbeat: the watchdog used to stand down for good after the
+            // first buffer, so a tap that died mid-recording (coreaudiod
+            // restart, output switched to Bluetooth) silently cut system.wav
+            // short. While buffers keep coming it just re-arms; buffers
+            // stopping while some other process IS playing means the tap
+            // died, and it gets a fresh rebuild budget.
+            self.stateLock.lock()
+            let stale0 = gen != self.generation
+            let delivering = self.gotFirstBuffer
+            let age = ProcessInfo.processInfo.systemUptime - self.lastBufferUptime
+            self.stateLock.unlock()
+            if stale0 { return }
+            if delivering {
+                if age < self.watchdogDelay { self.armWatchdog(generation: gen); return }
+                guard Self.otherProcessIsPlaying() else { self.armWatchdog(generation: gen); return }
+                FileLogger.log("SystemAudioTap: no IOProc audio for \(Int(age)) s while audio is playing, the tap died mid-recording")
+                self.stateLock.lock()
+                self.gotFirstBuffer = false
+                self.restarts = 0
+                self.idleAtLastCheck = false
+                self.stateLock.unlock()
+            }
             let playing = Self.otherProcessIsPlaying()
             self.stateLock.lock()
             let stale = gen != self.generation          // a stop()/restart superseded us
             let healthy = self.gotFirstBuffer
             let canRetry = self.restarts < self.maxRestarts
-            if stale || healthy { self.stateLock.unlock(); return }
+            if stale { self.stateLock.unlock(); return }
+            if healthy { self.stateLock.unlock(); self.armWatchdog(generation: gen); return }
             if !playing {
                 let firstTime = !self.loggedIdle
                 self.loggedIdle = true
@@ -183,7 +209,11 @@ final class SystemAudioTap {
                 try self.buildAndStart()
                 self.armWatchdog(generation: gen)
             } catch {
+                // Keep watching: the next check rebuilds again or, out of
+                // attempts, gives up and fires `onGaveUp` (the warning). A
+                // failed rebuild used to end the watchdog silently.
                 FileLogger.log("SystemAudioTap: rebuild failed: \(error.localizedDescription)")
+                self.armWatchdog(generation: gen)
             }
         }
     }
@@ -307,9 +337,11 @@ final class SystemAudioTap {
             }
             // Mark the tap healthy on the first delivered buffer so the
             // watchdog stands down (and log it once for diagnostics).
+            let now = ProcessInfo.processInfo.systemUptime
             self.stateLock.lock()
             let firstTime = !self.gotFirstBuffer
             self.gotFirstBuffer = true
+            self.lastBufferUptime = now
             self.stateLock.unlock()
             if firstTime { FileLogger.log("SystemAudioTap: first IOProc buffer (\(frameCount) frames), tap healthy.") }
             onAudio(pcm, hostTime)

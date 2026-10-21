@@ -97,11 +97,19 @@ enum ShareService {
         //    row-level security policy"). The Worker also DERIVES the object key
         //    from the JWT, so the client never names its own path.
         var hasAudio = false
-        let m4aURL = clip.map { MediaExporter.audioClipM4A(meetingId: meetingId, startMs: $0.startMs, endMs: $0.endMs) }
-            ?? MediaExporter.audioM4A(meetingId: meetingId)
+        // The AAC encode blocks for up to 180 s on a long meeting and the
+        // file read is the whole m4a; both used to run here on the main
+        // actor, which beachballed the app for the whole encode.
+        let clipRange = clip.map { (startMs: $0.startMs, endMs: $0.endMs) }
+        let m4aURL = await Task.detached(priority: .userInitiated) { () -> URL? in
+            if let r = clipRange {
+                return MediaExporter.audioClipM4A(meetingId: meetingId, startMs: r.startMs, endMs: r.endMs)
+            }
+            return MediaExporter.audioM4A(meetingId: meetingId)
+        }.value
         if let m4aURL {
             do {
-                let data = try Data(contentsOf: m4aURL)
+                let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: m4aURL) }.value
                 try await uploadAudio(data: data, meetingId: meetingId, jwt: jwt, clip: clip)
                 hasAudio = true
             } catch {

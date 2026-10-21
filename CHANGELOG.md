@@ -16,6 +16,17 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.86] - 2026-10-21
+
+### Fixed
+
+- Very long recordings (over about three hours) are saved in full. Recording audio now takes half the disk space, and a file can no longer become unreadable past 4 GB.
+- If the other side's audio stops coming through mid-call (for example after the audio system restarts), Corder reconnects to it, keeps both sides in sync, and warns you if it can't.
+- If your microphone stops delivering sound mid-recording, Corder reconnects to it on its own.
+- Fixed a rare crash when switching audio devices during a recording.
+- Creating a share link for a long meeting no longer freezes Corder while the audio is prepared.
+- Corder stays responsive while a long recording is being processed after you stop it.
+
 ## [0.15.85] - 2026-10-21
 
 ### Changed

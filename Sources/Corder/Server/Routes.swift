@@ -1170,21 +1170,21 @@ enum Routes {
            let s = obj["clip_start_ms"] as? Int, let e = obj["clip_end_ms"] as? Int {
             clip = ShareService.Clip(startMs: s, endMs: e)
         }
-        let sem = DispatchSemaphore(value: 0)
-        var url: String?
-        var errorMsg: String?
-        Task { @MainActor in
-            defer { sem.signal() }
+        // Sharing does a verified re-push + an audio upload + a Worker call, so
+        // give it generous room (a long meeting's .m4a can take a moment). On
+        // timeout the share keeps going (not cancelled); the result is handed
+        // over under a lock, the old shared `var`s raced the late finish.
+        let shareClip = clip
+        let outcome: (url: String?, error: String?)? = awaitBlocking(timeout: 60, label: "share \(id)", cancelOnTimeout: false) {
             do {
-                url = try await ShareService.createShare(meetingId: id, repo: repo, clip: clip).absoluteString
+                let u = try await ShareService.createShare(meetingId: id, repo: repo, clip: shareClip).absoluteString
+                return (u, nil)
             } catch {
-                errorMsg = (error as? ShareService.ShareError)?.errorDescription
-                    ?? error.localizedDescription
+                return (nil, (error as? ShareService.ShareError)?.errorDescription ?? error.localizedDescription)
             }
         }
-        // Sharing does a verified re-push + an audio upload + a Worker call, so
-        // give it generous room (a long meeting's .m4a can take a moment).
-        _ = sem.wait(timeout: .now() + 60)
+        let url = outcome?.url
+        let errorMsg = outcome?.error
         if let url {
             return jsonResponse(["ok": true, "url": url])
         }
@@ -2341,7 +2341,7 @@ enum Routes {
     /// of stuck requests froze the whole Library. Returns nil on timeout
     /// (the work is cancelled). The result is handed over under a lock, so a
     /// late finish after the timeout can't race the caller.
-    static func awaitBlocking<T>(timeout: Double, label: String,
+    static func awaitBlocking<T>(timeout: Double, label: String, cancelOnTimeout: Bool = true,
                                  _ work: @escaping @Sendable () async -> T?) -> T? {
         let box = BlockingBox<T>()
         let sema = DispatchSemaphore(value: 0)
@@ -2351,7 +2351,7 @@ enum Routes {
             sema.signal()
         }
         if sema.wait(timeout: .now() + timeout) == .timedOut {
-            task.cancel()
+            if cancelOnTimeout { task.cancel() }
             FileLogger.log("Routes: \(label) still running after \(Int(timeout)) s, giving up on this request")
             return nil
         }

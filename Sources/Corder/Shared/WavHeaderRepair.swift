@@ -79,7 +79,11 @@ enum WavHeaderRepair {
 
         let newEnd = dataContentStart + realDataSize
         func writeU32LE(_ value: Int, at offset: Int) {
-            var le = UInt32(truncatingIfNeeded: value).littleEndian
+            // A file past 4 GiB can't state its size in a 32-bit field.
+            // Wrapping (the old truncatingIfNeeded) made readers see only the
+            // remainder, a few minutes of a multi-hour meeting; the maximum
+            // is the conventional "size unknown / to end of file" value.
+            var le = UInt32(clamping: value).littleEndian
             let bytes = withUnsafeBytes(of: &le) { Data($0) }
             try? handle.seek(toOffset: UInt64(offset))
             try? handle.write(contentsOf: bytes)

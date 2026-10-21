@@ -105,6 +105,28 @@ final class DataSafetyTests: XCTestCase {
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir.path)), ["mic.wav", "audio.wav"])
     }
 
+    /// DL-14: capture tracks are written as 16-bit integer (half the bytes
+    /// of float, so the 4 GiB WAV ceiling is twice as far away) while the
+    /// writers keep feeding float buffers.
+    func test_captureFileSettings_writeInt16FromFloatBuffers() throws {
+        let tap = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 2, interleaved: true)!
+        let url = dir.appendingPathComponent("system.wav")
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: CaptureEngine.captureFileSettings(for: tap),
+                                       commonFormat: tap.commonFormat, interleaved: tap.isInterleaved)
+            let buf = AVAudioPCMBuffer(pcmFormat: tap, frameCapacity: 48_000)!
+            buf.frameLength = 48_000
+            try file.write(from: buf)
+            XCTAssertEqual(file.fileFormat.settings[AVLinearPCMBitDepthKey] as? Int, 16)
+        }   // closing the file writes its header
+        let back = try AVAudioFile(forReading: url)
+        XCTAssertEqual(back.length, 48_000)
+        XCTAssertEqual(back.fileFormat.channelCount, 2)
+        XCTAssertEqual(back.fileFormat.sampleRate, 48_000)
+        let bytes = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+        XCTAssertLessThanOrEqual(bytes, 48_000 * 2 * 2 + 4096, "2 bytes per sample, not 4")
+    }
+
     private func writeWav(_ url: URL, seconds: Double) throws {
         try? FileManager.default.removeItem(at: url)
         let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!

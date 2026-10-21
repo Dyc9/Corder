@@ -537,7 +537,7 @@ final class TranscriptionPipeline {
                 // raw output differs from any v1 cache, the prefix bump
                 // forces a clean re-transcribe instead of replaying stale
                 // Gemini-diarized turns.
-                let mh = (try? Self.md5OfFile(at: micURL)) ?? ""
+                let mh = await Self.md5OffMain(micURL)
                 if mh.isEmpty { cacheUsable = false }
                 let ex = meeting.expectedOtherSpeakers.map(String.init) ?? "nil"
                 // v3: truncated Gemini chunks now force a split instead
@@ -552,8 +552,9 @@ final class TranscriptionPipeline {
                 // v2 + the other-speaker count: system.wav is now
                 // diarized on-device with numSpeakers = expectedOther,
                 // so the count affects raw output and must key the cache.
-                let mh = (try? Self.md5OfFile(at: micURL)) ?? ""
-                let sh = (try? Self.md5OfFile(at: systemURL)) ?? ""
+                async let micHash = Self.md5OffMain(micURL)
+                async let sysHash = Self.md5OffMain(systemURL)
+                let (mh, sh) = await (micHash, sysHash)
                 if mh.isEmpty || sh.isEmpty { cacheUsable = false }
                 let ex = meeting.expectedOtherSpeakers.map(String.init) ?? "nil"
                 // v11: mic.wav now passes through EchoSuppressor (far-end
@@ -570,7 +571,7 @@ final class TranscriptionPipeline {
                     FileLogger.log("transcribe(): legacy fallback, pulling mix from Dropbox \(remote)")
                     try await DropboxService.shared.download(remotePath: remote, to: mixURL)
                 }
-                let mxh = (try? Self.md5OfFile(at: mixURL)) ?? ""
+                let mxh = await Self.md5OffMain(mixURL)
                 if mxh.isEmpty { cacheUsable = false }
                 cacheKey = "\(providerTag)mix:" + mxh
             }
@@ -643,9 +644,15 @@ final class TranscriptionPipeline {
                     // a headphone/BT recording (no acoustic coupling) → we
                     // fall back to the raw mic, so this is a no-op there.
                     let aecTempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-                        .appendingPathComponent("corder-aec-\(meetingId).wav")
-                    let micTranscribeURL = EchoSuppressor.suppress(micURL: micURL, systemURL: systemURL, outURL: aecTempURL) ?? micURL
-                    defer { if micTranscribeURL != micURL { try? FileManager.default.removeItem(at: aecTempURL) } }
+                        .appendingPathComponent("corder-aec-\(meetingId)-\(UUID().uuidString).wav")
+                    // Off the main actor: a whole-recording STFT pass, seconds
+                    // to tens of seconds on a long meeting, froze the menu.
+                    let micTranscribeURL = await Task.detached(priority: .userInitiated) {
+                        EchoSuppressor.suppress(micURL: micURL, systemURL: systemURL, outURL: aecTempURL)
+                    }.value ?? micURL
+                    // Always: a failed suppress can leave a partial temp
+                    // (hundreds of MB on a long meeting) and returns nil.
+                    defer { try? FileManager.default.removeItem(at: aecTempURL) }
                     // Per-track language tallies: WhisperTranscriber records
                     // the language Whisper detected for EACH chunk into these,
                     // so we can spot per-chunk drift (far-end chunks misheard
@@ -2155,7 +2162,9 @@ final class TranscriptionPipeline {
         // keyboard clicks and breaths as gaps.
         let rival: URL? = (referenceURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false)
             ? referenceURL : nil
-        let spans = VoiceActivityDetector.dominanceMap(primaryURL: wavURL, referenceURL: rival)?.spans
+        let spans = await Task.detached(priority: .userInitiated) {
+            VoiceActivityDetector.dominanceMap(primaryURL: wavURL, referenceURL: rival)?.spans
+        }.value
         guard let spans, let lastSpan = spans.last else { return turns }
 
         // DEGENERATE turns: a span that is clearly voiced for seconds yet came
@@ -2267,7 +2276,7 @@ final class TranscriptionPipeline {
         for batch in batches {
             guard let firstWindow = batch.first else { continue }
             let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("corder-gap-\(meetingId)-\(firstWindow.start).wav")
+                .appendingPathComponent("corder-gap-\(meetingId)-\(firstWindow.start)-\(UUID().uuidString).wav")
             defer { try? FileManager.default.removeItem(at: tmp) }
             guard let proj = try? VoiceActivityDetector.concatenateSpeech(
                 audioURL: wavURL,
@@ -3351,7 +3360,14 @@ final class TranscriptionPipeline {
     /// if the audio.wav we're about to transcribe matches a previous one
     /// byte-for-byte, we re-use the cached [Turn] list instead of paying
     /// for another Gemini round-trip.
-    static func md5OfFile(at url: URL) throws -> String {
+    /// `md5OfFile` on a background thread; "" when the file can't be read.
+    /// A fresh 2-hour system.wav is gigabytes, hashed on the main actor
+    /// before.
+    nonisolated static func md5OffMain(_ url: URL) async -> String {
+        await Task.detached(priority: .userInitiated) { (try? md5OfFile(at: url)) ?? "" }.value
+    }
+
+    nonisolated static func md5OfFile(at url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = Insecure.MD5()
