@@ -171,18 +171,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // recording dir + Dropbox files). Runs once per launch; missing
         // a launch just means the entries linger one extra day, which is
         // fine, the cap is "≥7 days, eventually wiped".
-        // Free disk: delete mic.wav + system.wav for meetings older than
-        // 30 days that already have gemini_raw_turns cached (only when the
-        // playback mix covers them, see `mixCoversOriginals`).
+        // The original mic.wav / system.wav are never deleted automatically
+        // any more (product decision 2026-10-21): a re-transcribe from the
+        // mixed playback copy separates speakers worse. When recordings pile
+        // up, the Library suggests archiving old ones instead (StorageAdvice).
         //
-        // Both run off the main thread, at launch and every 6 hours: the
+        // Runs off the main thread, at launch and every 6 hours: the
         // menu-bar app stays up for weeks, and a launch-only pass kept
         // archived meetings well past the promised 7 days (the UI showed a
         // `purge_at` that had already passed).
         let repo = AppContext.shared.repo
         let housekeeping: @Sendable () -> Void = {
             Self.purgeExpiredArchive(repo: repo)
-            Self.purgeStaleOriginals(repo: repo)
             MediaExporter.sweepStaleExports()
             ChunkTranscriptCache.sweepExpired()
         }
@@ -355,6 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        UpdateController.shared.releasePendingInstallForQuit()
         let ctx = AppContext.shared
         guard ctx.recordingState != .idle || ctx.recordingStarting else {
             FileLogger.log("AppDelegate: applicationShouldTerminate → .terminateNow")
@@ -498,53 +499,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MediaExporter.removeExports(for: id)
             try? repo.deleteMeeting(id: id)
         }
-    }
-
-    /// Disk-pressure relief: for meetings transcribed >30 days ago whose
-    /// raw Gemini turns are already cached, the original mic.wav and
-    /// system.wav are dead weight. Re-transcribe (clarify-banner, pinned
-    /// speaker count) reuses gemini_raw_turns and never touches the
-    /// originals again. mix.wav stays, it's still served for playback.
-    /// Idempotent: re-runs are no-ops when files have already been purged.
-    nonisolated private static func purgeStaleOriginals(repo: MeetingRepository) {
-        let retentionMs: Int64 = 30 * 24 * 60 * 60 * 1000
-        let cutoff = Int64(Date().timeIntervalSince1970 * 1000) - retentionMs
-        guard let ids = try? repo.transcribedWithCacheOlderThan(cutoff), !ids.isEmpty else { return }
-        var freed: Int64 = 0
-        var purged = 0
-        for id in ids {
-            let dir = AppPaths.recordingDir(for: id)
-            // The playback mix is the only copy left once the originals go,
-            // so it must exist and cover the whole meeting. A missing,
-            // partial or unreadable audio.wav keeps the originals.
-            guard Self.mixCoversOriginals(in: dir) else { continue }
-            for name in ["mic.wav", "system.wav"] {
-                let url = dir.appendingPathComponent(name)
-                if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int64 {
-                    freed += size
-                    purged += 1
-                    try? FileManager.default.removeItem(at: url)
-                }
-            }
-        }
-        if purged > 0 {
-            let mb = Double(freed) / 1_048_576
-            FileLogger.log(String(format: "purgeStaleOriginals: removed %d original tracks across %d cached meetings, freed %.1f MB",
-                                  purged, ids.count, mb))
-        }
-    }
-
-    /// True when `audio.wav` opens and is at least as long as the longest
-    /// original track (minus a second of slack for left-pad rounding).
-    nonisolated static func mixCoversOriginals(in dir: URL) -> Bool {
-        func seconds(_ name: String) -> Double? {
-            guard let f = try? AVAudioFile(forReading: dir.appendingPathComponent(name)),
-                  f.processingFormat.sampleRate > 0 else { return nil }
-            return Double(f.length) / f.processingFormat.sampleRate
-        }
-        guard let mix = seconds("audio.wav"), mix > 0 else { return false }
-        let longest = max(seconds("mic.wav") ?? 0, seconds("system.wav") ?? 0)
-        return mix >= longest - 1
     }
 
     /// Reap any OLDER Corder process still running (this instance is the

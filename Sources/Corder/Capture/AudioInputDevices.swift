@@ -84,6 +84,28 @@ enum AudioInputDevices {
         return list().first(where: { $0.transport == "BuiltIn" })
     }
 
+    /// When the system default input is a Bluetooth headset mic and the
+    /// user hasn't picked a device: the wired mic to record instead (the
+    /// built-in one first, then USB; virtual, aggregate and other Bluetooth
+    /// devices never). nil when the default isn't Bluetooth or there is no
+    /// wired mic (lid closed, no USB mic), then the default is used.
+    ///
+    /// Opening a headset's mic flips it from A2DP to HFP/SCO: ~3 s of
+    /// silence-and-stall at Start (measured on every BT start) and call-
+    /// quality sound in the user's ears for the whole recording. The wired
+    /// mic keeps the headset in A2DP. Same rule as Hyprnote/Char
+    /// (`wired_input_replacing_bluetooth_default`) and Granola's dictation
+    /// default. Does a full device walk, call it off the main thread.
+    static func wiredReplacementForBluetoothDefault() -> Info? {
+        let defaultID = systemDefaultInputDeviceID()
+        guard defaultID != kAudioObjectUnknown, transportType(deviceID: defaultID) == "Bluetooth" else { return nil }
+        let candidates = list().filter { $0.transport == "BuiltIn" || $0.transport == "USB" }
+        func rank(_ d: Info) -> (Int, Int) {
+            (d.transport == "BuiltIn" ? 0 : 1, d.name.lowercased().contains("microphone") ? 0 : 1)
+        }
+        return candidates.min { rank($0) < rank($1) }
+    }
+
     // MARK: - Apply to AVAudioEngine
 
     /// Set the AVAudioEngine input node to read from the device whose

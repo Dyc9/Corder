@@ -130,6 +130,16 @@ enum Routes {
         server.get["/api/recording/state"] = { _ in recordingState() }
         server.post["/api/recording/start"] = { _ in startRecordingNow() }
         MCPService.register(on: server)
+        server.get["/api/storage-advice"] = { _ in
+            jsonResponse(StorageAdvice.report(repo: repo))
+        }
+        server.post["/api/storage-advice/archive-old"] = { _ in
+            jsonResponse(["archived": StorageAdvice.archiveOld(repo: repo)])
+        }
+        server.post["/api/storage-advice/dismiss"] = { _ in
+            StorageAdvice.snooze()
+            return jsonResponse(["ok": true])
+        }
         server.post["/api/recording/stop"] = { _ in stopRecordingNow() }
         server.get["/api/settings"] = { _ in settingsGet() }
         server.post["/api/settings"] = { req in settingsSet(req: req) }

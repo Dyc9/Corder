@@ -3,6 +3,7 @@ import { Search } from "lucide-react";
 import { MeetingSummary, MeetingStatus, retranscribe, retitle, pinMeeting, renameMeeting } from "../api";
 import { OverlayScrollbar } from "./OverlayScrollbar";
 import { formatDate, formatDuration, dateBucket, formatExactDate } from "../format";
+import { StorageBanner } from "./StorageBanner";
 import type { Lang, T } from "../i18n";
 
 function statusLabel(s: MeetingStatus, t: T): string {
@@ -221,6 +222,14 @@ export function Sidebar({ meetings, loaded, activeId, playingId, query, onQueryC
           />
         </div>
       </div>
+      {/* Lives here, not on the Welcome screen: Welcome is only shown to
+          people with no recordings, who never need it. */}
+      <StorageBanner
+        t={t}
+        onArchived={(n) => window.dispatchEvent(new CustomEvent("corder-toast", {
+          detail: { title: (t.storage_archived_toast ?? "Moved {count} old sessions to the Archive").replace("{count}", String(n)), kind: "info" },
+        }))}
+      />
       <div className="sidebar-list ovsb-scroll" ref={listRef}>
         {!loaded && (
           <div className="sidebar-skeleton" aria-hidden>

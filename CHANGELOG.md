@@ -16,6 +16,14 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.91] - 2026-10-21
+
+### Changed
+
+- With Bluetooth headphones, recording now starts instantly. On the Auto microphone setting Corder records with the Mac's microphone and leaves the headphones alone, so they keep their full sound quality during the recording. If you picked a microphone yourself, Corder still uses it.
+- Corder no longer deletes the original audio of older recordings on its own, so any recording can be transcribed again later with full quality. When recordings start to take a lot of space, Corder offers to move sessions older than three months to the Archive instead.
+- With automatic updates turned on, a downloaded update is now installed at a quiet moment (nothing recording or transcribing, and the Mac idle for a while) instead of waiting until you quit Corder.
+
 ## [0.15.90] - 2026-10-21
 
 ### Changed

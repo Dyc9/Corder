@@ -640,6 +640,16 @@ final class CaptureEngine: NSObject {
             } else {
                 FileLogger.log("CaptureEngine.start: saved mic UID=\(chosenUID) not found / apply failed, falling back to system default")
             }
+        } else if let wired = await Self.offMain({ AudioInputDevices.wiredReplacementForBluetoothDefault() }) {
+            // "Auto" + a Bluetooth default input: record the wired mic so the
+            // headset stays in A2DP (no ~3 s HFP switch at Start, no call-
+            // quality sound in the user's ears). An explicit pick, even a
+            // Bluetooth one, is always honoured above.
+            if AudioInputDevices.apply(uid: wired.uid, to: engine) != nil {
+                FileLogger.log("CaptureEngine.start: default input is Bluetooth, recording '\(wired.name)' [\(wired.transport ?? "?")] instead")
+            } else {
+                FileLogger.log("CaptureEngine.start: default input is Bluetooth, could not bind '\(wired.name)', using the default")
+            }
         }
         // NOTE: auto-forcing the BT headset mic here (apply the BT input when
         // outputBluetoothAtStart) was tried and REVERTED, a freshly-applied
@@ -1255,7 +1265,15 @@ extension CaptureEngine: SCStreamOutput {
         let chosenUID = AppSettings.micDeviceUID
         let inputNode = newEngine.inputNode
         let fmt = await Self.offMain { () -> AVAudioFormat in
-            if let chosenUID { _ = AudioInputDevices.apply(uid: chosenUID, to: newEngine) }
+            if let chosenUID {
+                _ = AudioInputDevices.apply(uid: chosenUID, to: newEngine)
+            } else if let wired = AudioInputDevices.wiredReplacementForBluetoothDefault() {
+                // Headphones connected mid-recording became the default
+                // input: stay on the wired mic (see start()).
+                if AudioInputDevices.apply(uid: wired.uid, to: newEngine) != nil {
+                    FileLogger.log("CaptureEngine: mic config change, default input is Bluetooth, staying on '\(wired.name)'")
+                }
+            }
             return inputNode.outputFormat(forBus: 0)
         }
         guard isRecording, !tearingDown else { return }

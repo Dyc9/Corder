@@ -693,3 +693,30 @@ export async function deleteAccount(): Promise<void> {
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
 }
 
+
+/** "Archive old sessions?" nudge, see StorageAdvice.swift. */
+export interface StorageAdvice {
+  warn: boolean;
+  total_bytes: number;
+  free_bytes: number;
+  old_count: number;
+  old_bytes: number;
+  older_than_days: number;
+}
+
+export async function getStorageAdvice(): Promise<StorageAdvice | null> {
+  try {
+    const r = await fetch("/api/storage-advice");
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+export async function archiveOldSessions(): Promise<number> {
+  const r = await fetch("/api/storage-advice/archive-old", { method: "POST" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return (await r.json()).archived ?? 0;
+}
+
+export async function dismissStorageAdvice(): Promise<void> {
+  await fetch("/api/storage-advice/dismiss", { method: "POST" });
+}

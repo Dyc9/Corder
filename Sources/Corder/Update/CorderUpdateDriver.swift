@@ -26,6 +26,37 @@ final class CorderUpdateDriver: NSObject, SPUUserDriver {
     /// the state. A user-INITIATED check never sets this, the modal shows so
     /// the click has visible feedback.
     private var flowSilent = false
+    /// Silent flow: the downloaded update's reply, held until a quiet moment.
+    private var pendingQuietInstall: ((SPUUserUpdateChoice) -> Void)?
+    private var quietInstallTimer: Timer?
+
+    private func installIfQuiet() {
+        guard let reply = pendingQuietInstall else {
+            quietInstallTimer?.invalidate(); quietInstallTimer = nil
+            return
+        }
+        guard RecordingStateSnapshot.read() == .idle, !AppContext.shared.recordingStarting,
+              !TranscriptionPipeline.shared.isBusy,
+              !(LibraryWindow.shared.isOnScreen) else { return }
+        // kCGAnyInputEventType: seconds since the last key, click or move.
+        let anyInput = CGEventType(rawValue: ~0) ?? .null
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
+        guard idle >= 15 * 60 else { return }
+        FileLogger.log("UpdateDriver: quiet moment (idle \(Int(idle)) s, nothing recording or transcribing), installing the downloaded update")
+        pendingQuietInstall = nil
+        quietInstallTimer?.invalidate(); quietInstallTimer = nil
+        reply(.install)
+    }
+
+    /// The app is about to quit with a silent update still waiting for a
+    /// quiet moment: hand it back to Sparkle as "install after quit".
+    func releasePendingInstallForQuit() {
+        guard let reply = pendingQuietInstall else { return }
+        pendingQuietInstall = nil
+        quietInstallTimer?.invalidate(); quietInstallTimer = nil
+        FileLogger.log("UpdateDriver: quitting with a pending silent update, installing it after quit")
+        reply(.dismiss)
+    }
 
     // MARK: - Permission request
 
@@ -256,8 +287,18 @@ final class CorderUpdateDriver: NSObject, SPUUserDriver {
         // installs it automatically after the app terminates, so the user gets
         // the new version next time they quit, with no modal and no interruption.
         if flowSilent {
-            FileLogger.log("UpdateDriver: showReady SILENT → dismiss (install on next quit, no relaunch)")
-            reply(.dismiss)
+            // Install at the next QUIET moment instead of waiting for a quit:
+            // Corder lives in the menu bar for weeks, so "on next quit" kept
+            // people on old builds (and old bugs) indefinitely. Quiet = no
+            // recording, nothing transcribing, Library hidden and the Mac
+            // untouched for 15 minutes. A quit before then still installs
+            // (`releasePendingInstallForQuit`).
+            FileLogger.log("UpdateDriver: showReady SILENT → install at the next quiet moment (or on quit)")
+            pendingQuietInstall = reply
+            quietInstallTimer?.invalidate()
+            quietInstallTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
+                Task { @MainActor [weak self] in self?.installIfQuiet() }
+            }
             return
         }
         FileLogger.log("UpdateDriver: showReady(toInstallAndRelaunch) → auto-install (single-click flow)")

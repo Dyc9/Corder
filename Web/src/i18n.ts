@@ -82,6 +82,12 @@ interface Strings {
   settings_mcp_title?: string;
   /// Sidebar row tooltip suffix for sessions transcribed from a file.
   sidebar_source_import?: string;
+  /// StorageBanner ("archive old sessions?"); {total} {count} {months} {old}.
+  storage_title?: string;
+  storage_body?: string;
+  storage_archive?: string;
+  storage_later?: string;
+  storage_archived_toast?: string;
   sidebar_source_mcp?: string;
   settings_mcp_desc?: string;
   settings_mcp_copy?: string;
@@ -511,6 +517,11 @@ const en: Strings = {
   settings_recordings_folder_desc: "Open the folder with all your recordings in Finder.",
   settings_mcp_title: "AI assistants",
   sidebar_source_import: "Transcribed from a file",
+  storage_title: "Recordings take {total}",
+  storage_body: "{count} sessions are older than {months} months and take {old}. Move them to the Archive? They are deleted after 7 days there, until then you can restore them.",
+  storage_archive: "Move to Archive",
+  storage_later: "Not now",
+  storage_archived_toast: "Moved {count} old sessions to the Archive",
   sidebar_source_mcp: "Transcribed from a file by an AI assistant",
   settings_mcp_desc: "Let Claude transcribe audio files on this Mac, save them here and read your sessions. Run this command once in Terminal, then restart Claude.",
   settings_mcp_copy: "Copy command",
@@ -548,7 +559,7 @@ const en: Strings = {
   settings_pick_none: "No apps found",
   settings_pick_recent: "used mic",
   settings_mic_device: "Microphone",
-  settings_mic_device_desc: "Select input device which records your voice",
+  settings_mic_device_desc: "Select input device which records your voice. On Auto, Bluetooth headphones are left alone and the Mac's microphone records you, so their sound stays clear and recording starts instantly.",
   settings_mic_device_system: "Auto",
   settings_mic_device_empty: "No input devices found",
   settings_asr_label: "Transcription model",

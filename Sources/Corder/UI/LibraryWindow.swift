@@ -629,6 +629,12 @@ final class LibraryWindow: NSWindowController {
     /// update modal). Returns nil while the window hasn't initialised
     /// or has been deinit'd.
     var webViewRef: WKWebView? { webView }
+    /// The Library is open and not fully covered (the quiet-moment update
+    /// install waits while it is).
+    var isOnScreen: Bool {
+        guard let w = window, w.isVisible else { return false }
+        return w.occlusionState.contains(.visible)
+    }
     private var bridgeHandler: WebBridgeHandler?
     private var downloadDelegate: WebDownloadDelegate?
     private var uiDelegate: WebUIDelegate?

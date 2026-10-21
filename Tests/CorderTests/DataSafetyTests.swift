@@ -67,22 +67,6 @@ final class DataSafetyTests: XCTestCase {
             meeting(id: UUID().uuidString, title: "Daily standup", audioPath: "/nonexistent/a.wav")))
     }
 
-    /// DL-6: originals are only dropped when the playback mix covers them.
-    func test_mixCoversOriginals() throws {
-        try writeWav(dir.appendingPathComponent("mic.wav"), seconds: 10)
-        try writeWav(dir.appendingPathComponent("system.wav"), seconds: 10)
-        XCTAssertFalse(AppDelegate.mixCoversOriginals(in: dir), "no audio.wav")
-
-        try writeWav(dir.appendingPathComponent("audio.wav"), seconds: 3)
-        XCTAssertFalse(AppDelegate.mixCoversOriginals(in: dir), "partial mix")
-
-        try writeWav(dir.appendingPathComponent("audio.wav"), seconds: 10)
-        XCTAssertTrue(AppDelegate.mixCoversOriginals(in: dir))
-
-        try Data("not a wav".utf8).write(to: dir.appendingPathComponent("audio.wav"))
-        XCTAssertFalse(AppDelegate.mixCoversOriginals(in: dir), "unreadable mix")
-    }
-
     /// DL-5 / 5.2: a failed mix never leaves a partial audio.wav (or a temp)
     /// that later checks would take for the finished mix; a good one lands
     /// complete, and two concurrent builds share one write.

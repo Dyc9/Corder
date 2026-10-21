@@ -22,6 +22,8 @@ final class UpdateController: NSObject {
 
     private let delegate = UpdaterDelegateBridge()
     private let userDriver = CorderUpdateDriver()
+    /// See `CorderUpdateDriver.releasePendingInstallForQuit`.
+    func releasePendingInstallForQuit() { userDriver.releasePendingInstallForQuit() }
     private let updater: SPUUpdater
 
     private override init() {

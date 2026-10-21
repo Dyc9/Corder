@@ -846,6 +846,19 @@ input[type="search"]::-webkit-search-decoration {
 }
 .sidebar-titlebar-pad { height: 36px; }
 .sidebar-search { padding: 4px 12px 12px; }
+/* StorageBanner in the sidebar column: the shared outline card, sized for
+   a 240 px column (the default clarify-banner padding is for the wide
+   transcript pane). */
+.trans-banner.clarify-banner.storage-banner {
+  width: auto;
+  margin: 0 12px 12px;
+  padding: 16px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+.storage-banner .clarify-body { font-size: 15px; }
+.storage-banner .summary-banner-sub { font-size: 13px; line-height: 1.45; }
 /* Archive variant: a back button sits to the LEFT of the search. Lay them in a
    row with a 6px gap (same as the top toolbar's button spacing), search grows. */
 .arc-sidebar-search { display: flex; align-items: center; gap: 6px; }

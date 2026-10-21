@@ -1247,8 +1247,9 @@ final class TranscriptionPipeline {
                         // video.mov for the screen preview in the Library.
                         // The Dropbox copy is just a cold-store backup
                         // the UI never has to hydrate it just to render
-                        // the most recent meetings. `purgeStaleOriginals`
-                        // sweeps older recordings at launch.
+                        // the most recent meetings. Originals are never
+                        // deleted automatically (StorageAdvice suggests
+                        // archiving old sessions instead).
                         FileLogger.log("dropbox: archive done for \(mid); originals kept locally for playback")
                     } catch {
                         FileLogger.log("dropbox: archive failed for \(mid): \(error)")
