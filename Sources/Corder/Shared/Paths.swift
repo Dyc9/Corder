@@ -49,10 +49,20 @@ enum AppPaths {
     }
 
     /// Active folder. `_guest` while signed out.
-    static var accountRoot: URL {
+    ///
+    /// Resolved ONCE per process, on first use, and never re-read. Every
+    /// legitimate account switch (sign in, sign out, delete account)
+    /// relaunches the app; the one path that clears the email in-process,
+    /// `AuthController.sessionLost`, can fire mid-recording or mid-
+    /// transcription, and re-resolving here flipped recordings to `_guest`
+    /// while the open DB stayed on the account (the far-end track read from
+    /// the wrong folder, new recordings landed with no DB row). The new
+    /// folder takes effect on the next launch.
+    static var accountRoot: URL { launchAccountRoot }
+    private static let launchAccountRoot: URL = {
         let id = currentAccountID() ?? "_guest"
         return accountsRoot.appendingPathComponent(id, isDirectory: true)
-    }
+    }()
 
     static var databaseURL: URL { accountRoot.appendingPathComponent("corder.db") }
     /// Disposable per-chunk transcript cache (own SQLite file so it never

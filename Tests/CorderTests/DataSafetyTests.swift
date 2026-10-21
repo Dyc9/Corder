@@ -83,6 +83,28 @@ final class DataSafetyTests: XCTestCase {
         XCTAssertFalse(AppDelegate.mixCoversOriginals(in: dir), "unreadable mix")
     }
 
+    /// DL-5 / 5.2: a failed mix never leaves a partial audio.wav (or a temp)
+    /// that later checks would take for the finished mix; a good one lands
+    /// complete, and two concurrent builds share one write.
+    func test_mix_isAtomic() async throws {
+        let out = dir.appendingPathComponent("audio.wav")
+        do {
+            try await AudioMixer.produceWhisperInput(
+                systemURL: nil, micURL: dir.appendingPathComponent("missing.wav"), outputURL: out)
+            XCTFail("expected bothStreamsMissing")
+        } catch {}
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [])
+
+        let mic = dir.appendingPathComponent("mic.wav")
+        try writeWav(mic, seconds: 2)
+        async let a: Void = AudioMixer.produceWhisperInput(systemURL: nil, micURL: mic, outputURL: out)
+        async let b: Void = AudioMixer.produceWhisperInput(systemURL: nil, micURL: mic, outputURL: out)
+        _ = try await (a, b)
+        let f = try AVAudioFile(forReading: out)
+        XCTAssertEqual(Double(f.length) / f.processingFormat.sampleRate, 2, accuracy: 0.05)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir.path)), ["mic.wav", "audio.wav"])
+    }
+
     private func writeWav(_ url: URL, seconds: Double) throws {
         try? FileManager.default.removeItem(at: url)
         let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
@@ -91,5 +113,46 @@ final class DataSafetyTests: XCTestCase {
         let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
         buf.frameLength = frames
         try file.write(from: buf)
+    }
+}
+
+/// CR-2: only a file SQLite calls corrupt is set aside; anything that
+/// could still hold the user's library is never deleted.
+final class DatabaseOpenTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corder-db-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    func test_corruptFile_isQuarantinedAndRecreated() throws {
+        let path = dir.appendingPathComponent("corder.db").path
+        try Data(repeating: 0x42, count: 8192).write(to: URL(fileURLWithPath: path))
+        let dbq = try Database.open(path: path)
+        XCTAssertNoThrow(try MeetingRepository(dbq: dbq).listMeetings())
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        XCTAssertTrue(names.contains { $0.hasPrefix("corder.db.corrupt-") }, "the bad file is kept aside: \(names)")
+    }
+
+    func test_corruptFile_isKeptWhenItCannotBeMovedAside() throws {
+        let url = dir.appendingPathComponent("corder.db")
+        let bytes = Data(repeating: 0x42, count: 8192)
+        try bytes.write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        XCTAssertThrowsError(try Database.open(path: url.path))
+        XCTAssertEqual(try Data(contentsOf: url), bytes, "the only copy must not be deleted")
+    }
+
+    func test_healthyFile_opensWithItsRows() throws {
+        let path = dir.appendingPathComponent("corder.db").path
+        try MeetingRepository(dbq: try Database.open(path: path)).insertMeeting(Meeting.fixture(id: "keep"))
+        XCTAssertNotNil(try MeetingRepository(dbq: try Database.open(path: path)).meeting(id: "keep"))
     }
 }

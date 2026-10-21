@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Combine
 import GRDB
@@ -10,8 +11,33 @@ final class AppContext: ObservableObject {
 
     private(set) lazy var dbq: DatabaseQueue = {
         do { return try Database.openShared() }
-        catch { fatalError("Failed to open DB: \(error)") }
+        catch { Self.failToOpenDatabase(error) }
     }()
+
+    /// The library database can't be opened (disk full, another process
+    /// holding it, a migration that fails). Crashing here crash-loops on
+    /// every launch, so Sparkle could never deliver a fix; tell the user
+    /// what is wrong and quit with the data untouched.
+    private static func failToOpenDatabase(_ error: Error) -> Never {
+        FileLogger.log("AppContext: cannot open the library database: \(error)")
+        let diskFull = (error as? DatabaseError)?.resultCode == .SQLITE_FULL
+            || ((try? AppPaths.databaseURL.deletingLastPathComponent()
+                .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                .volumeAvailableCapacityForImportantUsage ?? .max) < 200 * 1024 * 1024
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = diskFull ? "Your disk is full" : "Corder can't open its library"
+        alert.informativeText = diskFull
+            ? "Corder needs some free space to open your recordings. Free up a few gigabytes and open Corder again. Nothing was deleted."
+            : "Your recordings are safe and nothing was deleted. Quit other copies of Corder and open it again. If this keeps happening, send us this error: \(error.localizedDescription)"
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Show in Finder")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting([AppPaths.databaseURL])
+        }
+        exit(1)
+    }
 
     private(set) lazy var repo: MeetingRepository = MeetingRepository(dbq: dbq)
     let server = LocalServer()

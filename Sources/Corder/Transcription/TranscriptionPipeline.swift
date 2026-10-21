@@ -163,6 +163,14 @@ final class TranscriptionPipeline {
     /// Task is cancelled, but Gemini upload may run for a few more
     /// seconds, we ignore its eventual result via `catch is
     /// CancellationError` in `transcribe()`.
+    /// Cancel a run without touching the row (the caller is about to
+    /// delete it). No-op when nothing runs.
+    func cancelIfRunning(meetingId: String) {
+        guard let task = activeTasks[meetingId] else { return }
+        FileLogger.log("cancelIfRunning(): cancelling transcription for \(meetingId) (meeting is being deleted)")
+        task.cancel()
+    }
+
     func cancel(meetingId: String) {
         guard let task = activeTasks[meetingId] else {
             FileLogger.log("cancel(): no active task for \(meetingId)")

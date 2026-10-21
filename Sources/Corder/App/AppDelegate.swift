@@ -110,7 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The pass matches FOLDER names, and folders are "<date> <title>"
         // once renamed, so add each meeting's resolved folder name too.
         compactSkip.formUnion(compactSkip.map { AppPaths.recordingDir(for: $0).lastPathComponent })
-        Task.detached(priority: .utility) { Self.compactRetainedAudio(skip: compactSkip) }
+        Task.detached(priority: .utility) {
+            Self.compactRetainedAudio(skip: compactSkip)
+            MediaExporter.sweepStaleExports()
+        }
         // If a transcription was in flight when the previous process died
         // (forced quit, rebuild during dev, machine sleep), pick it up
         // again automatically. The audio files (mic.wav / system.wav) are
@@ -323,8 +326,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        FileLogger.log("AppDelegate: applicationShouldTerminate → .terminateNow")
-        return .terminateNow
+        let ctx = AppContext.shared
+        guard ctx.recordingState != .idle || ctx.recordingStarting else {
+            FileLogger.log("AppDelegate: applicationShouldTerminate → .terminateNow")
+            return .terminateNow
+        }
+        // Quitting mid-recording (Cmd+Q, log out, shut down, the relaunch
+        // after sign-in/out) used to exit with the WAV headers unwritten,
+        // the encoder buffer lost and the video trailer missing. Stop
+        // through the normal path first so the files are finalised and the
+        // meeting is queued for transcription (picked up on next launch).
+        FileLogger.log("AppDelegate: applicationShouldTerminate while \(ctx.recordingState), finishing the capture first")
+        Task { @MainActor in
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline {
+                if ctx.recordingStarting {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    continue
+                }
+                switch ctx.recordingState {
+                case .recording: await RecordingController.shared.stopRecording()
+                case .preroll: await RecordingController.shared.discardPreroll()
+                case .stopping: try? await Task.sleep(nanoseconds: 200_000_000)
+                case .idle: break
+                }
+                if ctx.recordingState == .idle && !ctx.recordingStarting { break }
+            }
+            FileLogger.log("AppDelegate: capture finished (state \(ctx.recordingState)), terminating")
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -436,6 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let dir = AppPaths.recordingDir(for: id)
             try? FileManager.default.removeItem(at: dir)
+            MediaExporter.removeExports(for: id)
             try? repo.deleteMeeting(id: id)
         }
     }
@@ -576,8 +608,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FileLogger.log("AppDelegate: reaping older Corder instance pid=\(app.processIdentifier)")
             app.terminate()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            for app in others where !app.isTerminated { app.forceTerminate() }
+        // Wait for them to be GONE before this instance touches the DB or
+        // any recording file. A polite terminate makes a recording instance
+        // finish its capture first (applicationShouldTerminate), which can
+        // take seconds; force-killing it after 1 s (the old behaviour) lost
+        // the end of that recording, and launch recovery then "repaired"
+        // files the old process was still writing. Force only a process that
+        // is still around after the grace period.
+        let deadline = Date().addingTimeInterval(35)
+        while Date() < deadline, others.contains(where: { !$0.isTerminated }) {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        for app in others where !app.isTerminated {
+            FileLogger.log("AppDelegate: older instance pid=\(app.processIdentifier) did not quit in 35 s, forcing")
+            app.forceTerminate()
+        }
+        let forceDeadline = Date().addingTimeInterval(3)
+        while Date() < forceDeadline, others.contains(where: { !$0.isTerminated }) {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
     }
 
@@ -635,9 +683,14 @@ enum CorderRelaunch {
         // `sleep 1; open` lets this process fully exit, releasing the port
         // and DB handle, before the replacement launches. No `-n`: we want
         // exactly one instance, and the old one is already on its way out.
+        // Wait for THIS process to be gone, not a fixed second: a quit
+        // during a recording first finishes the capture (see
+        // applicationShouldTerminate), and `open` on a still-running app
+        // only activates it, so the relaunch would silently not happen.
+        let pid = ProcessInfo.processInfo.processIdentifier
         let p = Process()
         p.launchPath = "/bin/sh"
-        p.arguments = ["-c", "sleep 1; open \"\(path)\""]
+        p.arguments = ["-c", "i=0; while kill -0 \(pid) 2>/dev/null && [ $i -lt 300 ]; do sleep 0.2; i=$((i+1)); done; sleep 0.5; open \"\(path)\""]
         do { try p.run() }
         catch { FileLogger.log("CorderRelaunch: spawn failed, \(error)") }
         NSApp.terminate(nil)

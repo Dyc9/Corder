@@ -47,6 +47,47 @@ enum MediaExporter {
     /// Synchronous wrapper around `AVAssetExportSession`, Swifter request
     /// handlers are blocking, so we drive the async export to completion
     /// on a semaphore rather than hopping threads.
+    /// Exports to a temp file and moves it to `out` only once complete. The
+    /// cache treats any non-empty, newer `out` as finished, so a timed-out,
+    /// failed or killed export written in place used to be served (and
+    /// share-uploaded) truncated forever.
+    private static func runExport(_ session: AVAssetExportSession, to out: URL) -> Bool {
+        let tmp = out.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString)-\(out.lastPathComponent)")
+        session.outputURL = tmp
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        guard runExport(session) else { return false }
+        do {
+            if FileManager.default.fileExists(atPath: out.path) {
+                _ = try FileManager.default.replaceItemAt(out, withItemAt: tmp)
+            } else {
+                try FileManager.default.moveItem(at: tmp, to: out)
+            }
+            return true
+        } catch {
+            FileLogger.log("MediaExporter: could not move the finished export into place, \(error)")
+            return false
+        }
+    }
+
+    /// Drops every cached export of a meeting (its audio lives in tmp, so a
+    /// deleted meeting must not leave a copy behind).
+    static func removeExports(for id: String) {
+        try? FileManager.default.removeItem(at: exportsDir(for: id))
+    }
+
+    /// Sweeps cached exports older than a day (they are one-off downloads).
+    static func sweepStaleExports(olderThan age: TimeInterval = 24 * 3600) {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("corder-exports", isDirectory: true)
+        let fm = FileManager.default
+        guard let dirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        let cutoff = Date().addingTimeInterval(-age)
+        for d in dirs {
+            let m = (try? d.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            if m < cutoff { try? fm.removeItem(at: d) }
+        }
+    }
+
     private static func runExport(_ session: AVAssetExportSession) -> Bool {
         let sem = DispatchSemaphore(value: 0)
         session.exportAsynchronously { sem.signal() }
@@ -75,9 +116,8 @@ enum MediaExporter {
         try? FileManager.default.removeItem(at: out)
         let asset = AVURLAsset(url: src, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else { return nil }
-        session.outputURL = out
         session.outputFileType = .m4a
-        return runExport(session) ? out : nil
+        return runExport(session, to: out) ? out : nil
     }
 
     /// `audio.wav` → AAC `.m4a` clipped to `[startMs, endMs)`. Same encode as
@@ -95,7 +135,6 @@ enum MediaExporter {
         try? FileManager.default.removeItem(at: out)
         let asset = AVURLAsset(url: src, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else { return nil }
-        session.outputURL = out
         session.outputFileType = .m4a
         // Clamp to the asset so a range past the end just yields a shorter clip
         // instead of failing the export.
@@ -105,7 +144,7 @@ enum MediaExporter {
         let full = CMTimeRange(start: .zero, duration: asset.duration)
         let want = CMTimeRange(start: start, end: end)
         session.timeRange = full.intersection(want)
-        return runExport(session) ? out : nil
+        return runExport(session, to: out) ? out : nil
     }
 
     /// `video.mov` (silent) + `audio.wav` → one `.mp4` with an AAC audio
@@ -149,8 +188,7 @@ enum MediaExporter {
         // re-encode); the audio is already AAC from the m4a step, so the
         // whole mux is a fast remux, not a transcode.
         guard let session = AVAssetExportSession(asset: comp, presetName: AVAssetExportPresetPassthrough) else { return nil }
-        session.outputURL = out
         session.outputFileType = .mp4
-        return runExport(session) ? out : nil
+        return runExport(session, to: out) ? out : nil
     }
 }

@@ -691,14 +691,18 @@ enum Routes {
             }
             let speakers = try repo.speakers(forMeeting: id)
             let segments = try repo.segments(forMeeting: id)
-            let hasVideo = FileManager.default.fileExists(atPath: m.videoPath)
-                || (m.dropboxVideoPath != nil)
+            // A live capture's files are not served (409, see serveMedia), so
+            // they are not "there" yet either; flipping to true at stop is
+            // what makes the player reload onto the finished file.
+            let live = Self.isLiveCapture(meeting: m)
+            let hasVideo = !live && (FileManager.default.fileExists(atPath: m.videoPath)
+                || (m.dropboxVideoPath != nil))
             // Playable audio = the mix (audio.wav), or the raw mic track, or a
             // Dropbox-archived copy. Mirrors serveMedia's resolution order.
             let mixAudioPath = AppPaths.recordingDir(for: id).appendingPathComponent("audio.wav").path
-            let hasAudio = FileManager.default.fileExists(atPath: mixAudioPath)
+            let hasAudio = !live && (FileManager.default.fileExists(atPath: mixAudioPath)
                 || FileManager.default.fileExists(atPath: m.audioPath)
-                || (m.dropboxAudioPath != nil)
+                || (m.dropboxAudioPath != nil))
             let dto = DTO.MeetingDetail(
                 id: m.id, started_at: m.startedAt, duration_ms: m.durationMs,
                 status: m.status.rawValue,
@@ -1771,6 +1775,20 @@ enum Routes {
 
     private static func deleteMeeting(id: String, repo: MeetingRepository) -> HttpResponse {
         guard !id.isEmpty else { return .badRequest(.text("missing meeting id")) }
+        if let m = try? repo.meeting(id: id), Self.isLiveCapture(meeting: m) {
+            // Deleting the folder under a running capture loses the audio and
+            // leaves the writers failing; stop the recording first.
+            return .raw(409, "Conflict", nil, nil)
+        }
+        // Stop a transcription of this meeting before its files go, so the
+        // run doesn't fail noisily (or write rows) for a deleted meeting.
+        let cancelled = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            TranscriptionPipeline.shared.cancelIfRunning(meetingId: id)
+            cancelled.signal()
+        }
+        _ = cancelled.wait(timeout: .now() + 2)
+        MediaExporter.removeExports(for: id)
         do {
             // Best-effort cleanup of cloud archive (fire-and-forget).
             if let m = try? repo.meeting(id: id) {
@@ -2003,9 +2021,26 @@ enum Routes {
 
     private enum MediaKind { case video, audio }
 
+    /// A meeting whose files a capture is still writing.
+    static func isLiveCapture(meeting m: Meeting) -> Bool {
+        if m.status == .recording || m.status == .preroll { return true }
+        switch RecordingStateSnapshot.read() {
+        case .recording(let id, _), .preroll(let id, _): return id == m.id
+        case .idle, .stopping: return false
+        }
+    }
+
     private static func serveMedia(id: String, kind: MediaKind, repo: MeetingRepository, headers: [String: String]) -> HttpResponse {
         do {
             guard let m = try repo.meeting(id: id) else { return .notFound }
+            // Never touch the files of a capture that is still running: the
+            // on-demand mix below patches WAV headers and would freeze a
+            // partial audio.wav, and the video remux swaps the inode the
+            // writer is appending to. The player retries once the row flips
+            // (`?ready=1`, see AudioCard).
+            if Self.isLiveCapture(meeting: m) {
+                return .raw(409, "Conflict", ["Retry-After": "5"], nil)
+            }
             let dropboxRemote = (kind == .video) ? m.dropboxVideoPath : m.dropboxAudioPath
             let contentType = (kind == .video) ? "video/quicktime" : "audio/wav"
 

@@ -20,7 +20,31 @@ enum AudioMixerError: Error, LocalizedError {
 /// The .mov is no longer required for transcription, so a corrupt video file
 /// does not block the transcript.
 enum AudioMixer {
+    /// Builds the playback mix at `outputURL`. Callers race on it (the
+    /// pipeline after stop, the player asking `/audio` at the same moment),
+    /// so concurrent calls for one output share a single build, and the
+    /// file is written to a temp name and moved into place only when
+    /// complete: a kill or a full disk mid-write never leaves a short
+    /// audio.wav that every later check would take for the finished mix.
     static func produceWhisperInput(systemURL: URL?, micURL: URL, outputURL: URL) async throws {
+        try await MixBuilds.shared.run(output: outputURL) {
+            let tmp = outputURL.deletingLastPathComponent()
+                .appendingPathComponent(".\(outputURL.deletingPathExtension().lastPathComponent)-\(UUID().uuidString).tmp.wav")
+            do {
+                try await writeMix(systemURL: systemURL, micURL: micURL, outputURL: tmp)
+                if FileManager.default.fileExists(atPath: outputURL.path) {
+                    _ = try FileManager.default.replaceItemAt(outputURL, withItemAt: tmp)
+                } else {
+                    try FileManager.default.moveItem(at: tmp, to: outputURL)
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: tmp)
+                throw error
+            }
+        }
+    }
+
+    private static func writeMix(systemURL: URL?, micURL: URL, outputURL: URL) async throws {
         let target = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                    sampleRate: 16_000,
                                    channels: 1,
@@ -452,5 +476,24 @@ enum AudioMixer {
             for i in 0..<maxFrames { dst[i] *= gain }
         }
         return out
+    }
+}
+
+/// One in-flight mix build per output file; a second caller awaits the
+/// first instead of writing the same file at the same time.
+actor MixBuilds {
+    static let shared = MixBuilds()
+    private var inflight: [String: Task<Void, Error>] = [:]
+
+    func run(output: URL, _ build: @escaping @Sendable () async throws -> Void) async throws {
+        let key = output.standardizedFileURL.path
+        if let running = inflight[key] {
+            try await running.value
+            return
+        }
+        let task = Task { try await build() }
+        inflight[key] = task
+        defer { inflight[key] = nil }
+        try await task.value
     }
 }

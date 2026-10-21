@@ -128,6 +128,12 @@ final class CaptureEngine: NSObject {
     // screen stream failed to start, in which case the recording went on
     // without video. Both used to be a single log line that was easy to miss.
     private var micWriteErrors: Int = 0
+    /// system.wav buffers that failed to open or write (the IOProc delivers
+    /// ~94 a second, so only the first one is logged).
+    nonisolated(unsafe) private var systemWriteErrors: Int = 0
+    /// Write failures on either audio track so far this capture. Polled by
+    /// `RecordingController`'s disk watch to warn while it still matters.
+    var audioWriteErrors: Int { micWriteErrors + systemWriteErrors }
     private var micFirstWriteError: String?
     private var videoStartFailed = false
     // Lazily-built converter used ONLY after a mid-recording input-device
@@ -202,6 +208,7 @@ final class CaptureEngine: NSObject {
         // Stop-summary diagnostics reset before anything can set them
         // (the SCStream start below may flag videoStartFailed).
         micWriteErrors = 0
+        systemWriteErrors = 0
         micFirstWriteError = nil
         videoStartFailed = false
         FileLogger.log("CaptureEngine.start: meetingId=\(meetingId) source=\(source)")
@@ -876,7 +883,7 @@ final class CaptureEngine: NSObject {
             let video = videoStartFailed ? ", video: SCStream start failed, no video for this recording" : ""
             FileLogger.log("CaptureEngine.stop: degraded recording: mic write errors = \(micWriteErrors)\(first)\(video)")
         }
-        FileLogger.log("CaptureEngine.stop: system frames captured = \(systemFramesWritten) (BT/SCO scenario shows 0 here)")
+        FileLogger.log("CaptureEngine.stop: system frames captured = \(systemFramesWritten) (BT/SCO scenario shows 0 here), system write errors = \(systemWriteErrors)")
 
         // Close system audio file so it's safe to read for transcription.
         systemAudioFile = nil
@@ -1243,7 +1250,8 @@ extension CaptureEngine: SCStreamOutput {
                 self.systemAudioFormat = format
                 FileLogger.log("CaptureEngine: opened system.wav (\(format.sampleRate) Hz, \(format.channelCount) ch, via process tap)")
             } catch {
-                FileLogger.log("CaptureEngine: failed to open system.wav: \(error)")
+                systemWriteErrors += 1
+                if systemWriteErrors == 1 { FileLogger.log("CaptureEngine: failed to open system.wav: \(error) (further failures are counted)") }
                 return
             }
         }
@@ -1264,7 +1272,8 @@ extension CaptureEngine: SCStreamOutput {
             try file.write(from: pcm)
             systemFramesWritten &+= Int64(pcm.frameLength)
         } catch {
-            FileLogger.log("CaptureEngine: system.wav write error: \(error)")
+            systemWriteErrors += 1
+            if systemWriteErrors == 1 { FileLogger.log("CaptureEngine: system.wav write error: \(error) (further failures are counted)") }
         }
     }
 

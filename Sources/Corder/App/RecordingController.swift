@@ -18,6 +18,51 @@ final class RecordingController {
     /// in the menu.
     private var prerollStarting = false
 
+    /// Runs for the whole visible recording: free space was only checked at
+    /// Start (500 MB, ~11 min of capture), so a long meeting could fill the
+    /// disk and every later buffer failed silently while the UI said
+    /// "Recording". Below 1 GB the user is warned once; below 200 MB the
+    /// recording is stopped through the normal path so the files are
+    /// finalised while there is still room for their headers.
+    private var diskWatch: Task<Void, Never>?
+
+    private func startDiskWatch() {
+        diskWatch?.cancel()
+        diskWatch = Task { @MainActor [weak self] in
+            var warnedLow = false
+            var warnedWrites = false
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                guard !Task.isCancelled, let self,
+                      case .recording = AppContext.shared.recordingState else { return }
+                let free = Self.freeDiskBytes() ?? .max
+                if free < 200 * 1024 * 1024 {
+                    FileLogger.log("RecordingController: \(free / 1_048_576) MB free, stopping the recording before the disk fills")
+                    self.notify(title: "notif_disk_full_title", body: "notif_disk_full_body", kind: "error")
+                    await self.stopRecording()
+                    return
+                }
+                if free < 1024 * 1024 * 1024, !warnedLow {
+                    warnedLow = true
+                    FileLogger.log("RecordingController: \(free / 1_048_576) MB free during recording, warning")
+                    self.notify(title: "notif_disk_low_title", body: "notif_disk_low_body", kind: "error")
+                }
+                if AppContext.shared.capture.audioWriteErrors > 0, !warnedWrites {
+                    warnedWrites = true
+                    FileLogger.log("RecordingController: audio write errors during recording (\(AppContext.shared.capture.audioWriteErrors)), warning")
+                    self.notify(title: "notif_write_error_title", body: "notif_write_error_body", kind: "error")
+                }
+            }
+        }
+    }
+
+    private func notify(title: String, body: String, kind: String) {
+        if AppSettings.notificationsEnabled {
+            NotificationsService.post(title: L.notif(title), body: L.notif(body))
+        }
+        LibraryWindow.shared.postToast(title: L.notif(title), body: L.notif(body), kind: kind)
+    }
+
     /// Start a new recording.
     ///
     /// `expectedOtherSpeakers` lets the caller seed the meeting with a
@@ -139,6 +184,7 @@ final class RecordingController {
             // user always knows capture is alive (and can stop without
             // chasing the menu bar).
             RecordingHUDPanel.shared.show()
+            startDiskWatch()
             FileLogger.log("RecordingController: started \(id)")
         } catch {
             FileLogger.log("RecordingController: start failed for \(id): \(error)")
@@ -220,6 +266,7 @@ final class RecordingController {
         }
         AppContext.shared.recordingState = .recording(meetingId: id, startedAt: startedAt)
         RecordingHUDPanel.shared.show()
+        startDiskWatch()
         FileLogger.log("RecordingController: pre-roll committed \(id)")
         return true
     }
@@ -241,6 +288,8 @@ final class RecordingController {
     func stopRecording() async {
         guard case .recording(let id, let startedAt) = AppContext.shared.recordingState else { return }
         AppContext.shared.recordingState = .stopping
+        diskWatch?.cancel()
+        diskWatch = nil
         // Snapshot the silence verdict BEFORE hide(): when the floating
         // HUD is suppressed (Library window open, the normal "record a
         // call I'm watching" case) `hide()` takes its `window == nil`

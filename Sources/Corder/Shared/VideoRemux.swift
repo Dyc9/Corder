@@ -27,8 +27,13 @@ enum VideoRemux {
     /// file in place. No-op on an already-faststart file (idempotent, safe to
     /// call before every serve). Blocking, call off the main thread (a Swifter
     /// worker). Returns true if it remuxed.
+    /// Serialises remuxes: parallel Range requests for one video each used
+    /// to start a full export and race on `replaceItemAt`.
+    private static let lock = NSLock()
+
     @discardableResult
     static func faststartIfNeeded(at url: URL) -> Bool {
+        lock.lock(); defer { lock.unlock() }
         guard needsFaststart(url) else { return false }
 
         let asset = AVURLAsset(url: url)
@@ -45,7 +50,13 @@ enum VideoRemux {
 
         let sema = DispatchSemaphore(value: 0)
         export.exportAsynchronously { sema.signal() }
-        sema.wait()
+        // Passthrough of even a long recording takes seconds; a wedged export
+        // must not hold this Swifter worker (and the lock) forever.
+        if sema.wait(timeout: .now() + 300) == .timedOut {
+            export.cancelExport()
+            FileLogger.log("VideoRemux: export of \(url.lastPathComponent) still running after 300 s, cancelled")
+            sema.wait()
+        }
 
         guard export.status == .completed,
               FileManager.default.fileExists(atPath: tmp.path) else {

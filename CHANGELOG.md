@@ -16,6 +16,21 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.84] - 2026-10-21
+
+### Fixed
+
+- Quitting Corder, logging out or shutting down the Mac while recording now finishes and saves the recording first, instead of cutting it off.
+- Signing in or out during a recording waits for the recording to be saved before Corder restarts.
+- Opening a second copy of Corder no longer cuts off a recording that the first copy is making.
+- If the disk gets nearly full during a recording, Corder warns you, and if it runs out it stops and saves the recording instead of silently recording nothing.
+- If your session expires in the middle of a recording or transcription, the meeting stays complete and in the right place.
+- Opening a meeting while it is still recording no longer leaves it with a cut-short playback file; playback becomes available as soon as the recording stops.
+- Playing a video while it is being prepared from several places at once no longer prepares it twice.
+- If Corder can't open its library (for example on a full disk), it now explains what to do instead of quitting without a word, and it never replaces your library with an empty one.
+- Deleting a meeting while it is transcribing stops the transcription, and deleted meetings no longer leave downloaded copies behind.
+- An interrupted download or share no longer leaves a broken copy that later downloads reuse.
+
 ## [0.15.83] - 2026-10-21
 
 ### Fixed
