@@ -158,7 +158,8 @@ enum WhisperCleanup {
             a person's name, username, or a product / game name, prefer keeping a sensible \
             phonetic version over swapping in an unrelated common word. If a stretch is too \
             garbled to reconstruct with any confidence, leave it as is rather than \
-            inventing. Return ONLY the edited text in the same line structure as the input: \
+            inventing. Keep е and ё exactly as the input spells them. \
+            Return ONLY the edited text in the same line structure as the input: \
             one line per input line, no numbering, no prefixes.
             """
             if let lang = language?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -250,7 +251,7 @@ enum WhisperCleanup {
             let cleaned = edited[i].trimmingCharacters(in: .whitespaces)
             // Empty polished line is suspect, the model dropped a turn,
             // and we'd rather keep the original than serve a blank.
-            let finalText = cleaned.isEmpty ? t.text : cleaned
+            let finalText = cleaned.isEmpty ? t.text : Self.keepingYo(of: t.text, in: cleaned)
             // Words ride along untouched: polish changes punctuation /
             // case / typos, never the spoken order, so the per-word
             // timings still describe this text (attribution splits the
@@ -272,6 +273,48 @@ enum WhisperCleanup {
     /// prefix on the last line, so we accept both numbered and bare
     /// non-empty lines and only validate the final count at the call
     /// site.
+    /// Puts back the recogniser's own е / ё in every word the polish only
+    /// changed in that respect. gpt-4o-mini adds or drops ё on a whim, even at
+    /// temperature 0: the same voice message polished twice came back once as
+    /// "всё / её / ещё" and once as "все / ее / еще" (2026-10-21). With this
+    /// the spelling follows the ASR, so the same audio reads the same. A word
+    /// the input spells both ways is left as the polish wrote it.
+    nonisolated static func keepingYo(of original: String, in edited: String) -> String {
+        func fold(_ s: Substring) -> String {
+            s.lowercased().replacingOccurrences(of: "ё", with: "е")
+        }
+        var byFolded: [String: Substring?] = [:]
+        for word in original.split(whereSeparator: { !$0.isLetter }) {
+            let key = fold(word)
+            if let seen = byFolded[key] {
+                if let seen, seen.lowercased() != word.lowercased() { byFolded[key] = .some(nil) }
+            } else {
+                byFolded[key] = .some(word)
+            }
+        }
+        var out = ""
+        var current = ""
+        func flush() {
+            defer { current = "" }
+            guard !current.isEmpty else { return }
+            guard current.contains(where: { "еЕёЁ".contains($0) }),
+                  let entry = byFolded[fold(Substring(current))], let source = entry,
+                  source.count == current.count else { out += current; return }
+            for (c, o) in zip(current, source) {
+                switch c {
+                case "е", "ё": out += o == "ё" || o == "Ё" ? "ё" : "е"
+                case "Е", "Ё": out += o == "ё" || o == "Ё" ? "Ё" : "Е"
+                default: out.append(c)
+                }
+            }
+        }
+        for ch in edited {
+            if ch.isLetter { current.append(ch) } else { flush(); out.append(ch) }
+        }
+        flush()
+        return out
+    }
+
     private static func parseNumberedLines(_ content: String, expected: Int) -> [String] {
         let lines = content
             .components(separatedBy: .newlines)

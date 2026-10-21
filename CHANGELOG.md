@@ -16,6 +16,12 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.94] - 2026-10-21
+
+### Fixed
+
+- The same recording no longer comes out once with "ё" and once without it. The final text cleanup could add or drop "ё" at random; now it keeps the spelling the speech recognition chose.
+
 ## [0.15.93] - 2026-10-21
 
 ### Changed

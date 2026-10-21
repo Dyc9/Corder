@@ -295,3 +295,17 @@ final class HALMicCaptureTests: XCTestCase {
         print("HALMicCaptureTests: first buffer after \(firstAfter) s, \(total) frames at \(hal.format.sampleRate) Hz, default input \(AudioInputDevices.defaultInputSummary())")
     }
 }
+
+/// Polish must not flip е / ё: the same audio has to read the same.
+final class WhisperCleanupYoTests: XCTestCase {
+    func test_keepingYo_followsTheRecogniser() {
+        XCTAssertEqual(WhisperCleanup.keepingYo(of: "и все просто ее отнимут", in: "И всё. Просто её отнимут."),
+                       "И все. Просто ее отнимут.")
+        XCTAssertEqual(WhisperCleanup.keepingYo(of: "И всё, ещё что-то", in: "И все, еще что-то."),
+                       "И всё, ещё что-то.")
+        // Real fixes by the polish are kept.
+        XCTAssertEqual(WhisperCleanup.keepingYo(of: "кинал ее", in: "кидал её"), "кидал ее")
+        // A word the input spells both ways is left alone.
+        XCTAssertEqual(WhisperCleanup.keepingYo(of: "все и всё", in: "всё и всё"), "всё и всё")
+    }
+}
