@@ -115,12 +115,26 @@ final class TranscriptionPipeline {
     /// been superseded and bow out instead of starting a redundant run.
     private var taskGen: [String: Int] = [:]
 
+    /// Per-meeting engine override for the next run (the MCP "local"
+    /// engine), consumed when that run starts. Only the on-device model is
+    /// accepted: an API caller must never push a meeting onto a cloud
+    /// provider the user's plan or setting doesn't use.
+    private var forcedProvider: [String: TranscriptionProvider] = [:]
+
     @discardableResult
+    func enqueue(meetingId: String, forceFresh: Bool = false, provider: TranscriptionProvider?) -> Task<Void, Never> {
+        if provider == .whisperLocal, LocalWhisperTranscriber.isAvailable() {
+            forcedProvider[meetingId] = .whisperLocal
+        }
+        return enqueue(meetingId: meetingId, forceFresh: forceFresh)
+    }
+
     /// `forceFresh` bypasses the raw-turns cache so the run re-fetches ASR and
     /// re-runs the LLM polish from scratch — used by the MANUAL Re-transcribe so
     /// pipeline/prompt improvements actually reach an existing recording (a plain
     /// cache-hit re-transcribe only re-derives timing off the cached, already-
     /// polished text). Launch recovery / network retry keep the cache (default).
+    @discardableResult
     func enqueue(meetingId: String, forceFresh: Bool = false) -> Task<Void, Never> {
         // Double-clicking Re-transcribe used to spawn a SECOND task while
         // the first was still unwinding its cancellation. Both ran
@@ -300,7 +314,7 @@ final class TranscriptionPipeline {
         // (the user's preference is intact for next month), the
         // helper just stashes the runtime choice so every read
         // inside this method goes through `currentProvider`.
-        let userPick = AppSettings.transcriptionProvider
+        let userPick = forcedProvider.removeValue(forKey: meetingId) ?? AppSettings.transcriptionProvider
         var effective = userPick
         if userPick.usageClass == "advanced" {
             // No API key on disk for the chosen cloud provider →

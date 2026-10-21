@@ -8,7 +8,8 @@ let package = Package(
     // capturing call audio that SCStream can't see.
     platforms: [.macOS("14.2")],
     products: [
-        .executable(name: "Corder", targets: ["Corder"])
+        .executable(name: "Corder", targets: ["Corder"]),
+        .executable(name: "corder-mcp", targets: ["CorderMCP"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.0"),
@@ -48,6 +49,13 @@ let package = Package(
                 .copy("Resources/web"),
                 .copy("Resources/icons")
             ],
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
+        // stdio bridge for MCP clients, bundled as Contents/MacOS/corder-mcp.
+        .executableTarget(
+            name: "CorderMCP",
             swiftSettings: [
                 .swiftLanguageMode(.v5)
             ]

@@ -129,6 +129,7 @@ enum Routes {
         }
         server.get["/api/recording/state"] = { _ in recordingState() }
         server.post["/api/recording/start"] = { _ in startRecordingNow() }
+        MCPService.register(on: server)
         server.post["/api/recording/stop"] = { _ in stopRecordingNow() }
         server.get["/api/settings"] = { _ in settingsGet() }
         server.post["/api/settings"] = { req in settingsSet(req: req) }
@@ -942,6 +943,7 @@ enum Routes {
             capture_video: AppSettings.captureVideo,
             capture_video_hires: AppSettings.captureVideoHires,
             screen_recording_granted: CGPreflightScreenCaptureAccess(),
+            mcp_command: "claude mcp add --scope user corder -- '\(Bundle.main.bundlePath)/Contents/MacOS/corder-mcp'",
             capture_audio: AppSettings.captureAudio,
             auto_transcribe: AppSettings.autoTranscribe,
             auto_title: AppSettings.autoTitle,
@@ -2306,7 +2308,8 @@ enum Routes {
     /// on any failure (missing object, not signed in, network).
     private static func hydrateSupabaseAudio(meetingId: String, localURL: URL) -> Bool {
         awaitBlocking(timeout: 600, label: "Supabase hydrate \(meetingId)") { () -> Bool? in
-            guard let uid = SupabaseClientHolder.shared.auth.currentUser?.id else {
+            let client = await MainActor.run { SupabaseClientHolder.shared }
+            guard let uid = client.auth.currentUser?.id else {
                 FileLogger.log("hydrateSupabaseAudio: not signed in")
                 return false
             }
@@ -2320,7 +2323,7 @@ enum Routes {
                 // Swift's default `uuidString` is UPPERCASE → mismatch
                 // → 403 unauthorized. Match the SQL convention.
                 let key = "\(uid.uuidString.lowercased())/\(meetingId)/mix.wav"
-                let data = try await SupabaseClientHolder.shared.storage
+                let data = try await client.storage
                     .from("recordings")
                     .download(path: key)
                 // Atomic: a torn write would leave a short audio.wav that the
@@ -2358,7 +2361,7 @@ enum Routes {
         let sema = DispatchSemaphore(value: 0)
         let task = Task.detached {
             let v = await work()
-            box.lock.lock(); box.value = v; box.lock.unlock()
+            box.lock.withLock { box.value = v }
             sema.signal()
         }
         if sema.wait(timeout: .now() + timeout) == .timedOut {

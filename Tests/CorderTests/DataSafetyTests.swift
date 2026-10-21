@@ -242,3 +242,42 @@ extension StreamedRMSTests {
         XCTAssertEqual(rms, 0.3536, accuracy: 0.01)
     }
 }
+
+/// MCP endpoint: auth, handshake and tool list (tools/call needs the app).
+final class MCPServiceTests: XCTestCase {
+    private func call(_ json: String, auth: String = "Bearer t0ken-for-tests-0123456789abcdef0123") -> (Int, [String: Any]?) {
+        let (status, body) = MCPService.respond(to: Data(json.utf8), authorization: auth)
+        let obj = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        return (status, obj)
+    }
+
+    override func setUp() { MCPService.setTokenForTesting("t0ken-for-tests-0123456789abcdef0123") }
+
+    func test_rejectsWithoutToken() {
+        XCTAssertEqual(call(#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#, auth: "").0, 401)
+        XCTAssertEqual(call(#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#, auth: "Bearer wrong").0, 401)
+    }
+
+    func test_initialize_negotiatesVersion() {
+        let (status, obj) = call(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#)
+        XCTAssertEqual(status, 200)
+        let result = obj?["result"] as? [String: Any]
+        XCTAssertEqual(result?["protocolVersion"] as? String, "2025-03-26")
+        XCTAssertNotNil((result?["capabilities"] as? [String: Any])?["tools"])
+    }
+
+    func test_notification_isAccepted() {
+        XCTAssertEqual(call(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).0, 202)
+    }
+
+    func test_toolsList_hasTranscribe() {
+        let tools = (call(#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).1?["result"] as? [String: Any])?["tools"] as? [[String: Any]]
+        let names = Set(tools?.compactMap { $0["name"] as? String } ?? [])
+        XCTAssertEqual(names, ["transcribe_audio", "list_meetings", "get_meeting", "search_transcripts"])
+    }
+
+    func test_unknownMethod_isError() {
+        let err = call(#"{"jsonrpc":"2.0","id":3,"method":"nope"}"#).1?["error"] as? [String: Any]
+        XCTAssertEqual(err?["code"] as? Int, -32601)
+    }
+}

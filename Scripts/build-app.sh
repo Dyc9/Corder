@@ -18,6 +18,8 @@ mkdir -p "$APP/Contents/Resources"
 
 # Replace just the executable + bundled web resources.
 cp "$ROOT/.build/release/Corder" "$APP/Contents/MacOS/Corder"
+# MCP stdio bridge (Sources/CorderMCP): what Claude Code & co. launch.
+cp "$ROOT/.build/release/corder-mcp" "$APP/Contents/MacOS/corder-mcp"
 
 # Make sure dyld can find Sparkle.framework (and any future bundled
 # frameworks). swift-build doesn't set this rpath on bare CLI builds.
@@ -162,6 +164,7 @@ if [ -d "$APP/Contents/Frameworks/Sparkle.framework" ]; then
     done
     codesign --force --sign "$SIGN_IDENTITY" "${KEYCHAIN_OPT[@]+${KEYCHAIN_OPT[@]}}" "${TS_OPT[@]}" "${RUNTIME_OPT[@]+${RUNTIME_OPT[@]}}" "$APP/Contents/Frameworks/Sparkle.framework"
 fi
+codesign --force --sign "$SIGN_IDENTITY" "${KEYCHAIN_OPT[@]+${KEYCHAIN_OPT[@]}}" "${TS_OPT[@]}" "${RUNTIME_OPT[@]+${RUNTIME_OPT[@]}}" --identifier com.3mpq.Corder.mcp "$APP/Contents/MacOS/corder-mcp"
 codesign --force --sign "$SIGN_IDENTITY" "${KEYCHAIN_OPT[@]+${KEYCHAIN_OPT[@]}}" "${TS_OPT[@]}" "${RUNTIME_OPT[@]+${RUNTIME_OPT[@]}}" --entitlements "$ENTITLEMENTS" --identifier com.3mpq.Corder "$APP/Contents/MacOS/Corder"
 codesign --force --sign "$SIGN_IDENTITY" "${KEYCHAIN_OPT[@]+${KEYCHAIN_OPT[@]}}" "${TS_OPT[@]}" "${RUNTIME_OPT[@]+${RUNTIME_OPT[@]}}" --entitlements "$ENTITLEMENTS" --identifier com.3mpq.Corder "$APP"
 
@@ -178,6 +181,7 @@ if [[ "$SIGN_IDENTITY" == Developer\ ID* ]]; then
              "$SVDIR/Autoupdate" \
              "$SVDIR/Updater.app" \
              "$APP/Contents/Frameworks/Sparkle.framework" \
+             "$APP/Contents/MacOS/corder-mcp" \
              "$APP/Contents/MacOS/Corder"; do
         [ -e "$b" ] || continue
         if codesign -dvv "$b" 2>&1 | grep -q "Signature=adhoc"; then

@@ -52,22 +52,66 @@ enum AudioImporter {
         }
     }
 
+    /// Drag-and-drop path: failures become a toast / the sign-in sheet.
     private static func importOne(_ source: URL) async {
+        do {
+            _ = try await performImport(source, options: ImportOptions(interactive: true))
+        } catch ImportFailure.guestAtCap {
+            queue.removeAll()
+            AuthController.shared.present()
+        } catch ImportFailure.lowDisk {
+            LibraryWindow.shared.postToast(title: L.notif("import_low_disk"), body: "", kind: "error")
+            queue.removeAll()
+        } catch {
+            LibraryWindow.shared.postToast(title: L.notif("import_failed"), body: "", kind: "error")
+        }
+    }
+
+    struct ImportOptions {
+        /// Title to give the session up front (the auto-titler only names
+        /// untitled sessions, so this one is kept).
+        var title: String? = nil
+        /// Transcribe this session with this engine instead of the user's
+        /// setting (the MCP "local" engine).
+        var provider: TranscriptionProvider? = nil
+        /// Drag-and-drop: open the new row in the Library and notify.
+        var interactive: Bool
+    }
+
+    enum ImportFailure: Error, LocalizedError {
+        case guestAtCap, lowDisk, unsupported, couldNotCreate(String), decodeFailed(String)
+        var errorDescription: String? {
+            switch self {
+            case .guestAtCap: return "Corder holds the maximum number of sessions for a signed-out user. Sign in to Corder to add more."
+            case .lowDisk: return "Less than 500 MB of disk space is free."
+            case .unsupported: return "This file has no audio Corder can read."
+            case .couldNotCreate(let m): return "Could not create the session: \(m)"
+            case .decodeFailed(let m): return "Could not read the audio: \(m)"
+            }
+        }
+    }
+
+    /// Programmatic import (the MCP `transcribe_audio` tool): same storage
+    /// and transcription as a dropped file, no UI. Returns once the file is
+    /// decoded and its row exists; `done` finishes when the transcription
+    /// (queued behind earlier imports) has run.
+    static func importForAPI(_ source: URL, title: String?, provider: TranscriptionProvider?) async throws -> (id: String, done: Task<Void, Never>) {
+        guard isImportable(source) else { throw ImportFailure.unsupported }
+        return try await performImport(source, options: ImportOptions(title: title, provider: provider, interactive: false))
+    }
+
+    private static func performImport(_ source: URL, options: ImportOptions) async throws -> (id: String, done: Task<Void, Never>) {
         let name = source.deletingPathExtension().lastPathComponent
         // Same gates as Start recording: a guest holds at most
         // `guestSessionLimit` sessions, and we never write into a full disk.
         if RecordingController.guestAtSessionCap() {
-            FileLogger.log("AudioImporter: guest at session cap, offering sign-in instead of importing \(source.lastPathComponent)")
-            queue.removeAll()
-            AuthController.shared.present()
-            return
+            FileLogger.log("AudioImporter: guest at session cap, not importing \(source.lastPathComponent)")
+            throw ImportFailure.guestAtCap
         }
         let recordingsRoot = AppPaths.recordingDir(for: "probe").deletingLastPathComponent()
         if let free = (try? recordingsRoot.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
             .volumeAvailableCapacityForImportantUsage, free < 500 * 1024 * 1024 {
-            LibraryWindow.shared.postToast(title: L.notif("import_low_disk"), body: "", kind: "error")
-            queue.removeAll()
-            return
+            throw ImportFailure.lowDisk
         }
 
         let id = UUID().uuidString.lowercased()
@@ -86,17 +130,19 @@ enum AudioImporter {
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try AppContext.shared.repo.insertMeeting(meeting)
+            if let title = options.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                try? AppContext.shared.repo.setTitle(meetingId: id, title: title)
+            }
         } catch {
             FileLogger.log("AudioImporter: could not create session for \(source.lastPathComponent): \(error)")
-            LibraryWindow.shared.postToast(title: L.notif("import_failed"), body: "", kind: "error")
             try? FileManager.default.removeItem(at: dir)
-            return
+            throw ImportFailure.couldNotCreate(error.localizedDescription)
         }
         // The banner reads "Preparing audio" while the file decodes; the
         // pipeline takes the stage over once it starts.
         TranscriptionProgressStore.setStage(meetingId: id, .audio)
-        LibraryWindow.shared.openMeeting(id)
-        FileLogger.log("AudioImporter: importing \(source.lastPathComponent) as \(id)")
+        if options.interactive { LibraryWindow.shared.openMeeting(id) }
+        FileLogger.log("AudioImporter: importing \(source.lastPathComponent) as \(id)\(options.interactive ? "" : " (API)")")
 
         let durationMs: Int64
         do {
@@ -108,12 +154,12 @@ enum AudioImporter {
             TranscriptionProgressStore.clear(meetingId: id)
             try? AppContext.shared.repo.deleteMeeting(id: id)
             try? FileManager.default.removeItem(at: dir)
-            LibraryWindow.shared.postToast(title: L.notif("import_failed"), body: "", kind: "error")
-            return
+            throw ImportFailure.decodeFailed(error.localizedDescription)
         }
 
         meeting.endedAt = now + durationMs
         meeting.durationMs = durationMs
+        meeting.title = options.title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         do { try AppContext.shared.repo.updateMeeting(meeting) }
         catch { FileLogger.log("AudioImporter: duration update failed for \(id): \(error)") }
         FileLogger.log("AudioImporter: \(id) decoded (\(durationMs / 1000)s), scheduling transcription")
@@ -121,9 +167,11 @@ enum AudioImporter {
         // Transcription runs in the background, chained after the previous
         // import's; the next file in the queue starts decoding right away.
         let previous = transcribeChain
-        transcribeChain = Task { @MainActor in
+        let provider = options.provider
+        let interactive = options.interactive
+        let task = Task { @MainActor in
             await previous?.value
-            await TranscriptionPipeline.shared.enqueue(meetingId: id).value
+            await TranscriptionPipeline.shared.enqueue(meetingId: id, provider: provider).value
             // The auto-titler names a session from its transcript. When there
             // is none (failed run, silence), keep the file's own name so the
             // user can still tell which file this row came from.
@@ -133,12 +181,14 @@ enum AudioImporter {
                 try? repo.setTitle(meetingId: id, title: name)
                 RecordingDirNaming.renameToTitled(repo: repo, meetingId: id)
             }
-            if AppSettings.notificationsEnabled {
+            if interactive, AppSettings.notificationsEnabled {
                 NotificationsService.post(
                     title: L.notif("notif_ready_title"),
                     body: L.notif("notif_ready_body"))
             }
         }
+        transcribeChain = task
+        return (id, task)
     }
 
     /// Decodes any AVFoundation-readable file (mp3, m4a, aac, wav, aiff, caf,

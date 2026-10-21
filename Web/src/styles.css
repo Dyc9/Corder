@@ -4070,6 +4070,22 @@ body.resizing { cursor: col-resize; user-select: none; }
    Microphone dropdown (same shell, same width). Inherits `.clarify-btn`'s
    transparent + outlined surface, so it reads exactly like a SettingsSelect. */
 .settings-open-btn { width: 100%; }
+/* The MCP connect command in Settings → Advanced: selectable, wraps
+   anywhere (a long app path), same font as the rest of the pane. */
+.mcp-command {
+  display: block;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+  background: var(--bg-hover);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 8px 0 10px;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
 .recordings-folder-desc { margin-bottom: 10px; }
 /* The settings card sits on white, so #ececea (fine on the grey
    sidebar) reads as a heavy slab here. Use a much softer step so it

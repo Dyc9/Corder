@@ -39,6 +39,7 @@ final class LocalServer {
         }
         port = try UInt16(server.port())
         UserDefaults.standard.set(Int(port), forKey: storedKey)
+        MCPService.publish(port: port)
     }
 
     func stop() {

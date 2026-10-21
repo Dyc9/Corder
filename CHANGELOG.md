@@ -16,6 +16,12 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.89] - 2026-10-21
+
+### Added
+
+- Claude (and other apps that support MCP) can now work with Corder: give it an audio or video file, such as a Telegram voice message, and Corder transcribes it on your Mac with the on-device model and saves it as a session in your library. Claude can also list, read and search your sessions. To connect, open Settings, Advanced, AI assistants, copy the command and run it once in Terminal.
+
 ## [0.15.88] - 2026-10-21
 
 ### Added

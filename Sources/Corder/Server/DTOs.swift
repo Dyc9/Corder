@@ -123,6 +123,9 @@ enum DTO {
         /// Corder. Drives the "ghost video" CTA in the recording panel (video
         /// capture is unavailable until this is true).
         let screen_recording_granted: Bool?
+        /// Read-only: the Terminal command that registers Corder's MCP
+        /// bridge with Claude Code (Settings → Advanced → AI assistants).
+        let mcp_command: String?
         /// Mic + system are ONE switch on purpose: the dual-track
         /// pipeline assumes both WAVs exist; splitting them would drop
         /// into the legacy single-stream channel-gate path.

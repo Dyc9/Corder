@@ -472,6 +472,8 @@ export interface Settings {
   /** read-only: macOS Screen Recording currently granted to Corder. Video
    *  capture is unavailable (ghosted) until this is true. */
   screen_recording_granted?: boolean;
+  /** read-only: Terminal command that connects Claude Code to Corder (MCP). */
+  mcp_command?: string;
   /** mic+system are one switch server-side (dual-track invariant). */
   capture_audio?: boolean;
   auto_transcribe?: boolean;

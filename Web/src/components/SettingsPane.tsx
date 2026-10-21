@@ -8,6 +8,7 @@ import {
   type Settings, type InstalledApp, type AudioInputDevice,
 } from "../api";
 import { type T } from "../i18n";
+import { copyText } from "../clipboard";
 import { SettingsSelect, type SettingsSelectOption } from "./SettingsSelect";
 import { WhisperPrefetchPill } from "./WhisperPrefetchPill";
 import { OfflineModelRow } from "./OfflineModelRow";
@@ -45,6 +46,7 @@ export function SettingsPane({
   active?: boolean;
 }) {
   const [s, setS] = React.useState<Settings | null>(null);
+  const [mcpCopied, setMcpCopied] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   // Restore the remembered scroll offset when this section becomes active, so
   // reopening Settings lands where the user left off instead of at the top.
@@ -311,6 +313,30 @@ export function SettingsPane({
             </button>
           </div>
         </SoloCard>
+
+        {/* AI assistants (MCP), same `.hk-block` shell as Recordings folder:
+            label + desc + the command + a Copy button. */}
+        {s?.mcp_command && (
+          <SoloCard>
+            <div className="hk-block">
+              <div className="settings-row-label">{t.settings_mcp_title ?? "AI assistants"}</div>
+              <div className="settings-row-desc">{t.settings_mcp_desc}</div>
+              <code className="mcp-command">{s.mcp_command}</code>
+              <button
+                type="button"
+                className="clarify-btn settings-open-btn"
+                onClick={() => {
+                  void copyText(s.mcp_command ?? "").then(() => {
+                    setMcpCopied(true);
+                    window.setTimeout(() => setMcpCopied(false), 2000);
+                  });
+                }}
+              >
+                {mcpCopied ? (t.settings_mcp_copied ?? "Copied") : (t.settings_mcp_copy ?? "Copy command")}
+              </button>
+            </div>
+          </SoloCard>
+        )}
 
         <SoloCard>
           <Toggle

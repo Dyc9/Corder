@@ -69,7 +69,7 @@ enum TranscriptFormatter {
     /// Mirrors the UI: the local user speaker (tagged via either label or
     /// `customName == "you"`) renders as "I"; explicit user-set names take
     /// priority over labels; otherwise we fall back to "Speaker N".
-    private static func displayName(for speaker: Speaker?) -> String {
+    static func displayName(for speaker: Speaker?) -> String {
         guard let s = speaker else { return "Unknown" }
         let custom = s.customName?.trimmingCharacters(in: .whitespaces) ?? ""
         // "you" is the pipeline's internal placeholder for the local user.
