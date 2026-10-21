@@ -265,3 +265,33 @@ final class MCPServiceTests: XCTestCase {
         XCTAssertEqual(err?["code"] as? Int, -32601)
     }
 }
+
+/// HALMicCapture on the built-in mic. Opens a real microphone, so it only
+/// runs with CORDER_MIC_TEST=1 (run it with a Bluetooth headset as the
+/// default input: the point is that the headset is never opened).
+final class HALMicCaptureTests: XCTestCase {
+    func test_builtInMic_deliversBuffersQuickly() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["CORDER_MIC_TEST"] == "1", "needs a microphone")
+        let builtIn = try XCTUnwrap(AudioInputDevices.builtInInput(), "no built-in mic")
+        let id = try XCTUnwrap(AudioInputDevices.resolveDeviceID(forUID: builtIn.uid))
+        let got = expectation(description: "first buffer")
+        let lock = NSLock()
+        var frames = 0
+        var fulfilled = false
+        let t0 = Date()
+        let hal = try HALMicCapture(deviceID: id) { buf, when in
+            lock.lock(); defer { lock.unlock() }
+            frames += Int(buf.frameLength)
+            XCTAssertTrue(when.isHostTimeValid)
+            if !fulfilled { fulfilled = true; got.fulfill() }
+        }
+        wait(for: [got], timeout: 2)
+        let firstAfter = Date().timeIntervalSince(t0)
+        Thread.sleep(forTimeInterval: 0.5)
+        hal.stop()
+        lock.lock(); let total = frames; lock.unlock()
+        XCTAssertLessThan(firstAfter, 1.0, "first buffer took \(firstAfter) s")
+        XCTAssertGreaterThan(Double(total), hal.format.sampleRate * 0.4)
+        print("HALMicCaptureTests: first buffer after \(firstAfter) s, \(total) frames at \(hal.format.sampleRate) Hz, default input \(AudioInputDevices.defaultInputSummary())")
+    }
+}

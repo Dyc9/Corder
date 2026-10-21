@@ -77,6 +77,9 @@ final class CaptureEngine: NSObject {
     nonisolated(unsafe) private var lastMicBufferAt = Date()
     private var micWatchdog: Task<Void, Never>?
     private var pendingMicRetry: DispatchWorkItem?
+    /// The AUHAL mic capture when a Bluetooth default input was replaced by
+    /// the wired mic (otherwise the mic runs on `audioEngine`).
+    private var halMic: HALMicCapture?
     private var micReconfigInFlight = false
     private var micReconfigAgain = false
     private var lastWatchdogRetap = Date.distantPast
@@ -634,126 +637,16 @@ final class CaptureEngine: NSObject {
         // unplugged), we leave AVAudioEngine on the system default
         // identical to the pre-feature behaviour.
         FileLogger.log("CaptureEngine.start: system default input = \(AudioInputDevices.defaultInputSummary()), outputBT=\(outputBluetoothAtStart)")
-        // Creating the input node binds it to the default input, and on a
-        // Bluetooth headset that alone blocks ~3 s (it flips the headset to
-        // HFP; measured 3.1 s). Do it off the main thread, the 0.15.82 fix
-        // only moved the format query and the menu still froze.
-        let inputNode = await Self.offMain { engine.inputNode }
-        if let chosenUID = AppSettings.micDeviceUID {
-            if let resolvedID = await Self.offMain({ AudioInputDevices.apply(uid: chosenUID, to: engine) }) {
-                FileLogger.log("CaptureEngine.start: mic device set to UID=\(chosenUID) (AudioDeviceID=\(resolvedID))")
-            } else {
-                FileLogger.log("CaptureEngine.start: saved mic UID=\(chosenUID) not found / apply failed, falling back to system default")
-            }
+        // Auto + a Bluetooth default input: record the wired mic through
+        // AUHAL so the headset is never opened (see HALMicCapture). Any
+        // failure falls back to the AVAudioEngine path below.
+        var micOnHAL = false
+        if AppSettings.micDeviceUID == nil,
+           let wired = await Self.offMain({ AudioInputDevices.wiredReplacementForBluetoothDefault() }) {
+            micOnHAL = startHALMic(device: wired, micURL: micURL)
         }
-        // NOTE: auto-forcing the BT headset mic here (apply the BT input when
-        // outputBluetoothAtStart) was tried and REVERTED, a freshly-applied
-        // Bluetooth input device throws AVAudioEngine error -10868
-        // (kAudioUnitErr_FormatNotSupported) until it settles, and the START
-        // path has no retry (unlike handleMicConfigChange's backoff), so it
-        // aborted the whole recording. Redo via the settle-retry path, not a
-        // bare apply. The diagnostic line above stays for debugging.
-        // NOTE: macOS Voice Processing (AEC) was tried here to cancel
-        // speaker→mic echo, but it puts the whole audio session into VoIP
-        // mode, on Bluetooth it forces the low-quality HFP/SCO route (the
-        // far end hears your voice degrade) and handed back a bogus 5-channel
-        // mic format that produced an unusable recording. Reverted. The
-        // no-headphones echo is handled in the playback mix instead (duck
-        // the mic while the far end is talking), which never touches the
-        // capture path or the audio route.
-        // Mic init can throw -10868 (AUGraph input-chain init) when the input
-        // device isn't bound yet: it was JUST changed (user un/replugs
-        // headphones at record time) or coreaudiod is mid-restart, so
-        // `inputNode.outputFormat` momentarily reports a 0 Hz / invalid
-        // format. A single attempt hard-failed the whole recording with a
-        // scary popup. Retry a few times with a short settle delay + an
-        // engine reset, the device almost always binds within a second.
-        var micStarted = false
-        var lastMicError: Error?
-        var forcedBuiltIn = false
-        for attempt in 1...4 {
-            // After a couple of failures on the default device, typically a
-            // flaky BT headset mic (AirPods in a half-connected / HFP-flapping
-            // state) that throws -10868 on every attempt, force the built-in
-            // mic so a recording NEVER fails to start. A working built-in
-            // capture beats the scary "couldn't start recording (-10868)"
-            // popup. Skipped when the user has explicitly pinned a device.
-            if attempt >= 3, !forcedBuiltIn, AppSettings.micDeviceUID == nil,
-               let builtIn = await Self.offMain({ AudioInputDevices.builtInInput() }),
-               await Self.offMain({ AudioInputDevices.apply(uid: builtIn.uid, to: engine) }) != nil {
-                forcedBuiltIn = true
-                FileLogger.log("CaptureEngine.start: forcing built-in mic '\(builtIn.name)' after \(attempt - 1) failed attempt(s) on the default input")
-                try? await Task.sleep(nanoseconds: 200_000_000)   // let it bind
-            }
-            // Off the main thread: on a Bluetooth headset this call blocks
-            // ~3 s while the headset switches to its call (HFP) profile, which
-            // froze the menu-bar popover.
-            let fmt = await Self.offMain { inputNode.outputFormat(forBus: 0) }
-            // 0 Hz / 0 ch = device not bound yet. Don't even try to open a
-            // file with a bogus format (that's what throws -10868), wait.
-            guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
-                lastMicError = NSError(domain: "Corder.mic", code: -10868,
-                    userInfo: [NSLocalizedDescriptionKey: "input device not ready (format \(fmt.sampleRate) Hz)"])
-                FileLogger.log("CaptureEngine.start: mic input not ready on attempt \(attempt) (format \(fmt.sampleRate) Hz), settling + retry")
-                try? await Task.sleep(nanoseconds: 450_000_000)
-                continue
-            }
-            do {
-                let micFile = try AVAudioFile(
-                    forWriting: micURL,
-                    settings: Self.captureFileSettings(for: fmt),
-                    commonFormat: .pcmFormatFloat32,
-                    interleaved: false
-                )
-                self.micFile = micFile
-                inputNode.removeTap(onBus: 0)   // clear any tap a failed attempt left
-                // Install the capture tap. Extracted into installMicTap so the
-                // config-change handler can RE-tap the (possibly new) device
-                // mid-recording without duplicating the padding/write path.
-                installMicTap(on: inputNode)
-                try await Self.offMain {
-                    engine.prepare()
-                    try engine.start()
-                }
-                self.audioEngine = engine
-                micStarted = true
-                FileLogger.log("CaptureEngine.start: mic via AVAudioEngine; format \(fmt.sampleRate) Hz, \(fmt.channelCount) ch\(attempt > 1 ? " (started on retry \(attempt))" : "")")
-                break
-            } catch {
-                lastMicError = error
-                FileLogger.log("CaptureEngine.start: mic init attempt \(attempt) failed (\(error)), reset + retry")
-                inputNode.removeTap(onBus: 0)
-                if engine.isRunning { engine.stop() }
-                engine.reset()
-                self.micFile = nil
-                try? await Task.sleep(nanoseconds: 450_000_000)
-            }
-        }
-        if !micStarted {
-            // All retries exhausted. By here the SCStream is ALREADY live, so a
-            // bare throw would leak it (privacy indicator stuck on). Tear the
-            // partial capture down before rethrowing so it fails cleanly.
-            FileLogger.log("CaptureEngine.start: mic init failed after retries, tearing down any already-armed SCStream to avoid a leaked live capture")
-            if let s = self.stream {
-                try? s.removeStreamOutput(self, type: .screen)
-                try? s.removeStreamOutput(self, type: .audio)
-                try? await s.stopCapture()
-            }
-            self.stream = nil
-            self.sckSystemURL = nil
-            // The video writer was already started; leaving it `.writing`
-            // leaks it and a half video.mov (no finishWriting ever comes).
-            self.videoWriter?.cancelWriting()
-            self.videoWriter = nil
-            self.videoInput = nil
-            if let observer = micConfigObserver {
-                NotificationCenter.default.removeObserver(observer)
-                micConfigObserver = nil
-            }
-            inputNode.removeTap(onBus: 0)
-            if engine.isRunning { engine.stop() }
-            self.micFile = nil
-            throw lastMicError ?? CaptureError.noDisplay
+        if !micOnHAL {
+            try await startEngineMic(engine, micURL: micURL)
         }
 
         // Watch for a mid-recording audio route/device change (user switches
@@ -902,6 +795,8 @@ final class CaptureEngine: NSObject {
         audioEngine?.stop()
         audioEngine?.reset()
         audioEngine = nil
+        halMic?.stop()
+        halMic = nil
 
         // All buffer sources are now stopped (SCStream, process tap, mic), so
         // no NEW write is dispatched. Drain any writes still queued on the
@@ -1255,8 +1150,35 @@ extension CaptureEngine: SCStreamOutput {
             if old.isRunning { old.stop() }
             old.reset()
         }
-        let newEngine = AVAudioEngine()
         let chosenUID = AppSettings.micDeviceUID
+        // Auto + a Bluetooth default (headphones connected mid-recording, or
+        // the watchdog re-tapping a HAL capture): (re)start on the wired mic
+        // through AUHAL, the headset is never opened. mic.wav stays the same
+        // file; a different rate is resampled and the gap filled by
+        // writeMicBuffer, as for any device switch.
+        halMic?.stop()
+        halMic = nil
+        if chosenUID == nil,
+           let wired = await Self.offMain({ AudioInputDevices.wiredReplacementForBluetoothDefault() }),
+           let deviceID = AudioInputDevices.resolveDeviceID(forUID: wired.uid) {
+            guard isRecording, !tearingDown else { return }
+            writeQueue.sync {
+                micConverter = nil
+                micRetapPending = true
+            }
+            if let hal = try? makeHALMic(deviceID: deviceID) {
+                halMic = hal
+                audioEngine = nil
+                micReconfigAttempts = 0
+                pendingMicRetry?.cancel()
+                pendingMicRetry = nil
+                FileLogger.log("CaptureEngine: mic config change, default input is Bluetooth, recording '\(wired.name)' via AUHAL")
+                return
+            }
+            writeQueue.sync { micRetapPending = false }
+            FileLogger.log("CaptureEngine: mic config change, AUHAL on '\(wired.name)' failed, using AVAudioEngine")
+        }
+        let newEngine = AVAudioEngine()
         let inputNode = await Self.offMain { newEngine.inputNode }   // ~3 s on Bluetooth, see start()
         let fmt = await Self.offMain { () -> AVAudioFormat in
             if let chosenUID { _ = AudioInputDevices.apply(uid: chosenUID, to: newEngine) }
@@ -1609,5 +1531,169 @@ extension CaptureEngine {
                 cont.resume(returning: UncheckedTransfer(value: job.value()))
             }
         }.value
+    }
+}
+
+extension CaptureEngine {
+    /// The AVAudioEngine mic path (system default or the picked device),
+    /// with the -10868 settle-and-retry loop. Throws when every attempt
+    /// failed, after tearing down what start() had already armed.
+    fileprivate func startEngineMic(_ engine: AVAudioEngine, micURL: URL) async throws {
+        // Creating the input node binds it to the default input, and on a
+        // Bluetooth headset that alone blocks ~3 s (it flips the headset to
+        // HFP; measured 3.1 s). Do it off the main thread, the 0.15.82 fix
+        // only moved the format query and the menu still froze.
+        let inputNode = await Self.offMain { engine.inputNode }
+        if let chosenUID = AppSettings.micDeviceUID {
+            if let resolvedID = await Self.offMain({ AudioInputDevices.apply(uid: chosenUID, to: engine) }) {
+                FileLogger.log("CaptureEngine.start: mic device set to UID=\(chosenUID) (AudioDeviceID=\(resolvedID))")
+            } else {
+                FileLogger.log("CaptureEngine.start: saved mic UID=\(chosenUID) not found / apply failed, falling back to system default")
+            }
+        }
+        // NOTE: auto-forcing the BT headset mic here (apply the BT input when
+        // outputBluetoothAtStart) was tried and REVERTED, a freshly-applied
+        // Bluetooth input device throws AVAudioEngine error -10868
+        // (kAudioUnitErr_FormatNotSupported) until it settles, and the START
+        // path has no retry (unlike handleMicConfigChange's backoff), so it
+        // aborted the whole recording. Redo via the settle-retry path, not a
+        // bare apply. The diagnostic line above stays for debugging.
+        // NOTE: macOS Voice Processing (AEC) was tried here to cancel
+        // speaker→mic echo, but it puts the whole audio session into VoIP
+        // mode, on Bluetooth it forces the low-quality HFP/SCO route (the
+        // far end hears your voice degrade) and handed back a bogus 5-channel
+        // mic format that produced an unusable recording. Reverted. The
+        // no-headphones echo is handled in the playback mix instead (duck
+        // the mic while the far end is talking), which never touches the
+        // capture path or the audio route.
+        // Mic init can throw -10868 (AUGraph input-chain init) when the input
+        // device isn't bound yet: it was JUST changed (user un/replugs
+        // headphones at record time) or coreaudiod is mid-restart, so
+        // `inputNode.outputFormat` momentarily reports a 0 Hz / invalid
+        // format. A single attempt hard-failed the whole recording with a
+        // scary popup. Retry a few times with a short settle delay + an
+        // engine reset, the device almost always binds within a second.
+        var micStarted = false
+        var lastMicError: Error?
+        var forcedBuiltIn = false
+        for attempt in 1...4 {
+            // After a couple of failures on the default device, typically a
+            // flaky BT headset mic (AirPods in a half-connected / HFP-flapping
+            // state) that throws -10868 on every attempt, force the built-in
+            // mic so a recording NEVER fails to start. A working built-in
+            // capture beats the scary "couldn't start recording (-10868)"
+            // popup. Skipped when the user has explicitly pinned a device.
+            if attempt >= 3, !forcedBuiltIn, AppSettings.micDeviceUID == nil,
+               let builtIn = await Self.offMain({ AudioInputDevices.builtInInput() }),
+               await Self.offMain({ AudioInputDevices.apply(uid: builtIn.uid, to: engine) }) != nil {
+                forcedBuiltIn = true
+                FileLogger.log("CaptureEngine.start: forcing built-in mic '\(builtIn.name)' after \(attempt - 1) failed attempt(s) on the default input")
+                try? await Task.sleep(nanoseconds: 200_000_000)   // let it bind
+            }
+            // Off the main thread: on a Bluetooth headset this call blocks
+            // ~3 s while the headset switches to its call (HFP) profile, which
+            // froze the menu-bar popover.
+            let fmt = await Self.offMain { inputNode.outputFormat(forBus: 0) }
+            // 0 Hz / 0 ch = device not bound yet. Don't even try to open a
+            // file with a bogus format (that's what throws -10868), wait.
+            guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
+                lastMicError = NSError(domain: "Corder.mic", code: -10868,
+                    userInfo: [NSLocalizedDescriptionKey: "input device not ready (format \(fmt.sampleRate) Hz)"])
+                FileLogger.log("CaptureEngine.start: mic input not ready on attempt \(attempt) (format \(fmt.sampleRate) Hz), settling + retry")
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                continue
+            }
+            do {
+                let micFile = try AVAudioFile(
+                    forWriting: micURL,
+                    settings: Self.captureFileSettings(for: fmt),
+                    commonFormat: .pcmFormatFloat32,
+                    interleaved: false
+                )
+                self.micFile = micFile
+                inputNode.removeTap(onBus: 0)   // clear any tap a failed attempt left
+                // Install the capture tap. Extracted into installMicTap so the
+                // config-change handler can RE-tap the (possibly new) device
+                // mid-recording without duplicating the padding/write path.
+                installMicTap(on: inputNode)
+                try await Self.offMain {
+                    engine.prepare()
+                    try engine.start()
+                }
+                self.audioEngine = engine
+                micStarted = true
+                FileLogger.log("CaptureEngine.start: mic via AVAudioEngine; format \(fmt.sampleRate) Hz, \(fmt.channelCount) ch\(attempt > 1 ? " (started on retry \(attempt))" : "")")
+                break
+            } catch {
+                lastMicError = error
+                FileLogger.log("CaptureEngine.start: mic init attempt \(attempt) failed (\(error)), reset + retry")
+                inputNode.removeTap(onBus: 0)
+                if engine.isRunning { engine.stop() }
+                engine.reset()
+                self.micFile = nil
+                try? await Task.sleep(nanoseconds: 450_000_000)
+            }
+        }
+        if !micStarted {
+            // All retries exhausted. By here the SCStream is ALREADY live, so a
+            // bare throw would leak it (privacy indicator stuck on). Tear the
+            // partial capture down before rethrowing so it fails cleanly.
+            FileLogger.log("CaptureEngine.start: mic init failed after retries, tearing down any already-armed SCStream to avoid a leaked live capture")
+            if let s = self.stream {
+                try? s.removeStreamOutput(self, type: .screen)
+                try? s.removeStreamOutput(self, type: .audio)
+                try? await s.stopCapture()
+            }
+            self.stream = nil
+            self.sckSystemURL = nil
+            // The video writer was already started; leaving it `.writing`
+            // leaks it and a half video.mov (no finishWriting ever comes).
+            self.videoWriter?.cancelWriting()
+            self.videoWriter = nil
+            self.videoInput = nil
+            if let observer = micConfigObserver {
+                NotificationCenter.default.removeObserver(observer)
+                micConfigObserver = nil
+            }
+            inputNode.removeTap(onBus: 0)
+            if engine.isRunning { engine.stop() }
+            self.micFile = nil
+            throw lastMicError ?? CaptureError.noDisplay
+        }
+    }
+
+    /// AUHAL capture feeding the same writer as the engine tap.
+    fileprivate func makeHALMic(deviceID: AudioDeviceID) throws -> HALMicCapture {
+        try HALMicCapture(deviceID: deviceID) { [weak self] buffer, when in
+            guard let self else { return }
+            RecordingLevelMeter.shared.ingestMic(buffer: buffer)
+            guard let copy = Self.copyPCM(buffer) else { return }
+            self.writeQueue.async { [weak self] in self?.writeMicBuffer(copy, when: when) }
+        }
+    }
+
+    /// Opens `micURL` for the HAL capture's format and starts it on `device`.
+    /// Returns false (nothing left open) when the device can't be used.
+    fileprivate func startHALMic(device: AudioInputDevices.Info, micURL: URL) -> Bool {
+        guard let deviceID = AudioInputDevices.resolveDeviceID(forUID: device.uid) else { return false }
+        do {
+            let hal = try makeHALMic(deviceID: deviceID)
+            do {
+                let file = try AVAudioFile(forWriting: micURL,
+                                           settings: Self.captureFileSettings(for: hal.format),
+                                           commonFormat: .pcmFormatFloat32, interleaved: false)
+                writeQueue.sync { self.micFile = file }
+            } catch {
+                hal.stop()
+                FileLogger.log("CaptureEngine.start: could not open mic.wav for '\(device.name)': \(error)")
+                return false
+            }
+            halMic = hal
+            FileLogger.log("CaptureEngine.start: default input is Bluetooth, recording '\(device.name)' [\(device.transport ?? "?")] via AUHAL, \(hal.format.sampleRate) Hz \(hal.format.channelCount) ch")
+            return true
+        } catch {
+            FileLogger.log("CaptureEngine.start: AUHAL on '\(device.name)' failed (\(error)), using AVAudioEngine")
+            return false
+        }
     }
 }

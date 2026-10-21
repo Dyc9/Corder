@@ -16,6 +16,12 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.93] - 2026-10-21
+
+### Changed
+
+- With Bluetooth headphones, recording now starts right away. On the Auto microphone setting Corder records with the Mac's microphone and never switches the headphones into headset mode, so they keep their full sound quality. This also holds when you put the headphones on in the middle of a recording. If you picked a microphone yourself, Corder uses it.
+
 ## [0.15.92] - 2026-10-21
 
 ### Fixed
