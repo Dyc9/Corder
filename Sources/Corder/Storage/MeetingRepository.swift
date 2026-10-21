@@ -636,9 +636,17 @@ struct MeetingRepository {
                 return isJunk(text) ? r["id"] : nil
             }
             guard !ids.isEmpty else { return 0 }
-            let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
-            try db.execute(sql: "DELETE FROM segments WHERE id IN (\(placeholders))",
-                           arguments: StatementArguments(ids))
+            // In batches: SQLite caps bound variables at 32766, and one
+            // statement with more failed every launch, so the purge never
+            // happened at all on a big enough library.
+            var start = 0
+            while start < ids.count {
+                let slice = Array(ids[start..<min(start + 500, ids.count)])
+                let placeholders = Array(repeating: "?", count: slice.count).joined(separator: ",")
+                try db.execute(sql: "DELETE FROM segments WHERE id IN (\(placeholders))",
+                               arguments: StatementArguments(slice))
+                start += slice.count
+            }
             return ids.count
         }
     }

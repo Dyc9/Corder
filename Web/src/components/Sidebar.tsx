@@ -2,7 +2,7 @@ import React from "react";
 import { Search } from "lucide-react";
 import { MeetingSummary, MeetingStatus, retranscribe, retitle, pinMeeting, renameMeeting } from "../api";
 import { OverlayScrollbar } from "./OverlayScrollbar";
-import { formatDate, formatDuration, dateBucket } from "../format";
+import { formatDate, formatDuration, dateBucket, formatExactDate } from "../format";
 import type { Lang, T } from "../i18n";
 
 function statusLabel(s: MeetingStatus, t: T): string {
@@ -271,6 +271,7 @@ export function Sidebar({ meetings, loaded, activeId, playingId, query, onQueryC
                   + (m.status === "failed" ? " failed" : "")
                   + (m.pinned ? " pinned" : "")
                   + (m.viewed === false && m.status === "ready" ? " unseen" : "")}
+                title={formatExactDate(m.started_at)}
                 onClick={(e) => handleSelect(e, m.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();

@@ -219,17 +219,20 @@ private struct RecordingStatus: View {
 /// speaks again the card disappears on its next tick.
 private struct SilenceWarningBlock: View {
     let lang: String
-    @ObservedObject private var meter = RecordingLevelMeter.shared
-    @State private var now: Date = .init()
+    // Read on the 5 s tick, not observed: the meter publishes ~20 times a
+    // second during a recording, and observing it re-rendered this view
+    // (kept alive with the menu even while closed) the whole time.
+    @State private var shouldShow = false
     private static let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     /// Silence threshold in seconds. 10 minutes matches the user's
     /// intent: "they walked away and forgot, nudge them".
     private static let thresholdSec: TimeInterval = 600
 
-    private var shouldShow: Bool {
-        guard let last = meter.lastSpeechAt else { return false }
-        return now.timeIntervalSince(last) >= Self.thresholdSec
+    private func evaluate(_ now: Date = .init()) {
+        let show = RecordingLevelMeter.shared.lastSpeechAt
+            .map { now.timeIntervalSince($0) >= Self.thresholdSec } ?? false
+        if show != shouldShow { shouldShow = show }
     }
 
     var body: some View {
@@ -254,7 +257,8 @@ private struct SilenceWarningBlock: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
-        .onReceive(Self.timer) { now = $0 }
+        .onAppear { evaluate() }
+        .onReceive(Self.timer) { evaluate($0) }
     }
 }
 

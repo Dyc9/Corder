@@ -1479,6 +1479,23 @@ input[type="search"]::-webkit-search-decoration {
   display: flex; align-items: center; gap: 8px;
 }
 .breadcrumb-current { color: var(--fg); font-weight: 600; }
+/* Exact recording date after the title. Inherits the muted breadcrumb
+   colour; never wraps, the title gives way first. */
+.breadcrumb-meta {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+/* A long title stays on one line and ellipsizes instead of wrapping the
+   header into several rows next to the date. */
+.breadcrumb { min-width: 0; }
+.breadcrumb > .breadcrumb-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Root crumb (`Recordings`) is a real navigation affordance, click
    takes the user back to the dashboard. Subtle hover lift so the
    click target reads, but stays in muted-text weight when at rest. */

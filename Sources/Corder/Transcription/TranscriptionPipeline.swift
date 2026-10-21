@@ -23,6 +23,8 @@ final class TranscriptionPipeline {
     /// so the meeting flips to .failed promptly even if the upload keeps
     /// running for a few more seconds in the background.
     private var activeTasks: [String: Task<Void, Never>] = [:]
+    /// Any transcription queued or running.
+    var isBusy: Bool { !activeTasks.isEmpty }
 
     /// Runtime override of the user-picked provider. Set at the top
     /// of `transcribe()` to either honour the user setting or, if
@@ -3386,6 +3388,12 @@ final class TranscriptionPipeline {
         // re-enqueue only inserts segments that already passed
         // isHallucination (a superset of isExactHallucination), so a
         // concurrent transcription cannot hand this purge real speech.
+        // Once per app build: the scan holds the DB's write lock for the
+        // whole library, and everything inserted since already passed the
+        // stricter live filter. Only a new build can bring new patterns.
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+        let key = "Corder.set.hallucinationPurgeBuild"
+        if !build.isEmpty, UserDefaults.standard.string(forKey: key) == build { return }
         Task.detached(priority: .utility) {
             do {
                 // EXACT-only here (not isHallucination's 60% substring rule):
@@ -3398,6 +3406,7 @@ final class TranscriptionPipeline {
                 if purged > 0 {
                     FileLogger.log("startup: purged \(purged) hallucinated segments from existing transcripts")
                 }
+                if !build.isEmpty { UserDefaults.standard.set(build, forKey: key) }
             } catch {
                 FileLogger.log("startup: purgeKnownHallucinations failed: \(error)")
             }

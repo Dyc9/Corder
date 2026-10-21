@@ -65,6 +65,17 @@ export function formatDate(ms: number, _lang: Lang = "en"): string {
   return `${dateText}, ${time}`;
 }
 
+const LONG_D_EN = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+
+/// The full, unambiguous moment a recording started, always with the
+/// weekday, day, month, year and time: "Tuesday, 21 October 2026, 14:05".
+/// `formatDate` stays relative ("Today, 14:05") for titles and lists; this
+/// is for places that must say exactly when.
+export function formatExactDate(ms: number): string {
+  const d = new Date(ms);
+  return `${LONG_D_EN[d.getDay()]}, ${d.getDate()} ${LONG_M_EN[d.getMonth()]} ${d.getFullYear()}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function dateBucket(ms: number, _lang: Lang = "en"): string {
   const d = new Date(ms);
   const now = new Date();

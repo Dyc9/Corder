@@ -6,6 +6,8 @@ import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Kept alive for the process lifetime (see the model unload below).
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var menuBar: MenuBarController?
     private let notificationDelegate = NotificationDelegate()
 
@@ -182,6 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.purgeExpiredArchive(repo: repo)
             Self.purgeStaleOriginals(repo: repo)
             MediaExporter.sweepStaleExports()
+            ChunkTranscriptCache.sweepExpired()
         }
         Task.detached(priority: .utility) { housekeeping() }
         Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { _ in
@@ -199,8 +202,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // exactly what gets shipped.
         TelemetryService.tickIfDue()
         Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in
-            Task { @MainActor in TelemetryService.tickIfDue() }
+            Task { @MainActor in
+                TelemetryService.tickIfDue()
+                // Not on <=8 GB Macs: they load through the GPU, whose
+                // ~50 s compile is not cached, so every reload would cost
+                // the next meeting that much. There the memory-pressure
+                // path below still frees it when macOS needs the RAM.
+                if ProcessInfo.processInfo.physicalMemory / 1_073_741_824 > 8 {
+                    LocalWhisperTranscriber.unloadIfIdle(idleSeconds: 3600, reason: "idle")
+                }
+            }
         }
+        // Give the model's memory back the moment macOS asks for it.
+        let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        pressure.setEventHandler {
+            Task { @MainActor in LocalWhisperTranscriber.unloadIfIdle(idleSeconds: 120, reason: "memory pressure") }
+        }
+        pressure.resume()
+        memoryPressureSource = pressure
         // Self-heal launch-at-login: if the user turned it on but the live
         // SMAppService registration is gone (e.g. a Sparkle update replaced the
         // bundle and dropped it), re-register so it survives updates without the

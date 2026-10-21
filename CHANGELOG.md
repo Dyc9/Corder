@@ -16,6 +16,24 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.88] - 2026-10-21
+
+### Added
+
+- Each meeting now shows exactly when it was recorded (weekday, date and time) next to its title, and hovering a meeting in the list shows the same.
+
+### Changed
+
+- Corder gives back the memory of the on-device transcription model when it has been idle for an hour, or as soon as macOS runs low on memory.
+- The menu uses less energy during a recording.
+
+### Fixed
+
+- Switching headphones or audio devices in the middle of a recording no longer freezes Corder for a few seconds.
+- Two meetings processed at the same time no longer load the speaker models twice.
+- On a long meeting, the final text cleanup no longer stops halfway through.
+- Starting Corder with a very large library is quicker.
+
 ## [0.15.87] - 2026-10-21
 
 ### Fixed

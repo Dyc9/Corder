@@ -1353,6 +1353,21 @@ enum LocalWhisperTranscriber {
     /// Seconds since the on-device decoder last produced a token, nil if it
     /// never ran. Read by the transcribe watchdog: a slow Mac that is still
     /// decoding is not a hang.
+    /// Drops the loaded WhisperKit (about 1.5 GB) when nothing has decoded
+    /// for `idleSeconds` and nothing is recording, loading or transcribing.
+    /// The menu-bar app runs for weeks and used to hold the model the whole
+    /// time after the last meeting. The ANE compile is cached on disk, so
+    /// the next load is the warm one (seconds).
+    static func unloadIfIdle(idleSeconds: TimeInterval, reason: String) {
+        guard pipe != nil, initTask == nil, gpuFallbackTask == nil else { return }
+        guard AppContext.shared.recordingState == .idle, !TranscriptionPipeline.shared.isBusy else { return }
+        let idle = secondsSinceDecodeActivity() ?? .infinity
+        guard idle >= idleSeconds else { return }
+        FileLogger.log("LocalWhisper: unloading the model (\(reason), idle \(idle.isFinite ? "\(Int(idle)) s" : "since launch"))")
+        pipe = nil
+        pipeVariant = nil
+    }
+
     nonisolated static func secondsSinceDecodeActivity() -> TimeInterval? {
         DecodeMeter.secondsSinceActivity()
     }

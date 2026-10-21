@@ -320,7 +320,11 @@ enum GoogleCalendar {
         let cache = Cache(connected: connected, events: events,
                           fetchedAt: Date().timeIntervalSince1970, refreshToken: refreshToken)
         if let data = try? JSONEncoder().encode(cache) {
-            try? data.write(to: cacheURL)
+            // Atomic, so a torn write can't make `readCache` return nil and
+            // silently disconnect the calendar; owner-only, it holds the
+            // Google refresh token.
+            try? data.write(to: cacheURL, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
         }
     }
 }

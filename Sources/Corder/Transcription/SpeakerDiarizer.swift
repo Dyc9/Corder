@@ -22,7 +22,7 @@ struct DiarizedSegment: Sendable {
 ///
 /// `OfflineDiarizerManager` is a non-Sendable `final class`; we confine
 /// it to this actor so concurrent meetings can't race its model state.
-/// One prepared manager is kept warm per speaker-count constraint
+/// One prepared manager is kept warm for the last speaker-count constraint
 /// (most users have a stable group size), keyed so the common case
 /// skips the seconds-scale Core ML recompile.
 actor SpeakerDiarizer {
@@ -41,6 +41,24 @@ actor SpeakerDiarizer {
     /// the legacy Gemini-diarize path so a meeting never hard-fails
     /// worse than before this existed.
     func diarize(wavURL: URL, numSpeakers: Int?) async throws -> [DiarizedSegment] {
+        // An actor is re-entrant at every `await`: two meetings diarizing at
+        // once (launch recovery + a fresh stop) built two managers with two
+        // Core ML loads, or ran `process` on one non-Sendable manager
+        // concurrently. One diarization at a time.
+        await gate.wait()
+        do {
+            let segs = try await diarizeSerialized(wavURL: wavURL, numSpeakers: numSpeakers)
+            await gate.signal()
+            return segs
+        } catch {
+            await gate.signal()
+            throw error
+        }
+    }
+
+    private let gate = AsyncSemaphore(value: 1)
+
+    private func diarizeSerialized(wavURL: URL, numSpeakers: Int?) async throws -> [DiarizedSegment] {
         let key = (numSpeakers ?? 0) >= 1 ? numSpeakers! : 0
         let manager: OfflineDiarizerManager
         if let warm = managers[key] {
@@ -54,7 +72,10 @@ actor SpeakerDiarizer {
             // afterwards loads from ~/Library/Application Support cache
             // (Core ML compile + prewarm, seconds).
             try await mgr.prepareModels()
-            managers[key] = mgr
+            // Keep ONE warm manager: each holds its own copy of the Core ML
+            // models, and over weeks of clarify-banner counts (auto, 2, 3,
+            // 4…) they piled up in memory. A count change recompiles, seconds.
+            managers = [key: mgr]
             manager = mgr
         }
 

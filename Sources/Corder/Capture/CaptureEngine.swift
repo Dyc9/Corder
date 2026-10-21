@@ -77,6 +77,8 @@ final class CaptureEngine: NSObject {
     nonisolated(unsafe) private var lastMicBufferAt = Date()
     private var micWatchdog: Task<Void, Never>?
     private var pendingMicRetry: DispatchWorkItem?
+    private var micReconfigInFlight = false
+    private var micReconfigAgain = false
     private var lastWatchdogRetap = Date.distantPast
 
     private func startMicWatchdog() {
@@ -87,7 +89,7 @@ final class CaptureEngine: NSObject {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard let self, !Task.isCancelled, self.isRecording, !self.tearingDown else { return }
                 let silentFor = Date().timeIntervalSince(self.lastMicBufferAt)
-                guard silentFor > 5, self.micReconfigAttempts == 0,
+                guard silentFor > 5, self.micReconfigAttempts == 0, !self.micReconfigInFlight,
                       Date().timeIntervalSince(self.lastWatchdogRetap) > 30 else { continue }
                 self.lastWatchdogRetap = Date()
                 FileLogger.log("CaptureEngine: no mic buffers for \(Int(silentFor)) s, re-tapping the input")
@@ -1224,6 +1226,24 @@ extension CaptureEngine: SCStreamOutput {
     /// minutes" bug this whole path fixes).
     private func handleMicConfigChange() {
         guard isRecording, !tearingDown else { micReconfigAttempts = 0; return }
+        // The rebuild awaits Core Audio off the main thread (on a Bluetooth
+        // headset `outputFormat` alone blocks ~3 s, the same freeze 0.15.82
+        // fixed for Start). One rebuild at a time; a change that lands
+        // meanwhile runs one more pass when it ends.
+        guard !micReconfigInFlight else { micReconfigAgain = true; return }
+        micReconfigInFlight = true
+        Task { @MainActor in
+            await self.reconfigureMic()
+            self.micReconfigInFlight = false
+            if self.micReconfigAgain {
+                self.micReconfigAgain = false
+                self.handleMicConfigChange()
+            }
+        }
+    }
+
+    private func reconfigureMic() async {
+        guard isRecording, !tearingDown else { micReconfigAttempts = 0; return }
         // Retire the old engine first, holding it while a fresh engine binds the
         // same input device causes contention, and it's dead anyway.
         if let old = audioEngine {
@@ -1232,11 +1252,13 @@ extension CaptureEngine: SCStreamOutput {
             old.reset()
         }
         let newEngine = AVAudioEngine()
-        if let chosenUID = AppSettings.micDeviceUID {
-            _ = AudioInputDevices.apply(uid: chosenUID, to: newEngine)
-        }
+        let chosenUID = AppSettings.micDeviceUID
         let inputNode = newEngine.inputNode
-        let fmt = inputNode.outputFormat(forBus: 0)
+        let fmt = await Self.offMain { () -> AVAudioFormat in
+            if let chosenUID { _ = AudioInputDevices.apply(uid: chosenUID, to: newEngine) }
+            return inputNode.outputFormat(forBus: 0)
+        }
+        guard isRecording, !tearingDown else { return }
         // 0 Hz / 0 ch = new device not bound yet, the same transient start()
         // retries. Keep the fresh engine as current so stop()/retry stay coherent.
         guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
@@ -1250,14 +1272,23 @@ extension CaptureEngine: SCStreamOutput {
         }
         installMicTap(on: inputNode)
         do {
-            newEngine.prepare()
-            try newEngine.start()
+            try await Self.offMain {
+                newEngine.prepare()
+                try newEngine.start()
+            }
         } catch {
             audioEngine = newEngine
             inputNode.removeTap(onBus: 0)
             writeQueue.sync { micRetapPending = false }
             FileLogger.log("CaptureEngine: mic config change, fresh engine start FAILED (\(error)), retry")
             return scheduleMicReconfigRetry()
+        }
+        // stop() ran while the engine was starting: don't leave it running.
+        guard isRecording, !tearingDown else {
+            inputNode.removeTap(onBus: 0)
+            newEngine.stop()
+            newEngine.reset()
+            return
         }
         audioEngine = newEngine
         micReconfigAttempts = 0

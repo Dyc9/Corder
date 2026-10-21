@@ -28,6 +28,16 @@ enum ChunkTranscriptCache {
     /// Lazily-opened queue, re-opened if the account folder (and thus the
     /// path) changed under us. Thread-safe: callers run on the background
     /// transcription threads.
+    /// The TTL sweep on open runs once per process; the app stays up for
+    /// weeks, so the periodic housekeeping calls this too.
+    static func sweepExpired() {
+        guard let q = dbq() else { return }
+        let cutoff = Int(Date().timeIntervalSince1970) - ttlDays * 86_400
+        try? q.write { db in
+            try db.execute(sql: "DELETE FROM chunk_cache WHERE created_at < ?", arguments: [cutoff])
+        }
+    }
+
     private static func dbq() -> DatabaseQueue? {
         lock.lock(); defer { lock.unlock() }
         let path = AppPaths.chunkCacheURL.path

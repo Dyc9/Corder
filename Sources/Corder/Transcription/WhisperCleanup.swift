@@ -107,8 +107,13 @@ enum WhisperCleanup {
             let end = min(idx + maxTurnsPerCall, turns.count)
             let batch = Array(turns[idx..<end])
             batchNo += 1
+            // Fresh token per batch: the async accessor refreshes an
+            // expired one, and a polish that outlives the 1-hour access
+            // token used to send every later batch with a dead JWT and
+            // silently return it unpolished.
+            let batchJWT = jwt.isEmpty ? jwt : await Self.jwt()
             let polished = await polishBatch(batch, language: language,
-                                             apiKey: key, jwt: jwt, batchNo: batchNo,
+                                             apiKey: key, jwt: batchJWT.isEmpty ? jwt : batchJWT, batchNo: batchNo,
                                              highQuality: highQuality)
             out.append(contentsOf: polished)
             idx = end

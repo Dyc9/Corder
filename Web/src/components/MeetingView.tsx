@@ -34,7 +34,7 @@ function writeClarifyState(meetingId: string, state: "open" | "closed") {
 
 // Clipboard writing moved to ../clipboard.ts (shared with the Summary and
 // Chapters panes via CopyIconButton).
-import { formatDate, formatClock } from "../format";
+import { formatDate, formatClock, formatExactDate } from "../format";
 import { TranscriptPane } from "./TranscriptPane";
 import { SummaryPane } from "./SummaryPane";
 import { ChaptersPane } from "./ChaptersPane";
@@ -520,6 +520,14 @@ export function MeetingView({ meetingId, initialTitle, initialStartedAt, onDelet
                   )}
               </span>
             )}
+            {/* When it was recorded, exactly. The title alone says nothing
+                about it once the meeting is named, and the untitled
+                fallback is relative ("Yesterday, 14:05"). */}
+            <span className="breadcrumb-meta">
+              {formatExactDate(detail.id === meetingId
+                ? detail.started_at
+                : (initialStartedAt ?? detail.started_at))}
+            </span>
           </>
         )}
         onOpenArchive={onOpenArchive}
