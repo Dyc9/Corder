@@ -1,6 +1,7 @@
 import Foundation
 import CoreAudio
 import AVFoundation
+import IOKit
 
 /// Enumerate microphone-class Core Audio devices and apply a chosen
 /// one to an `AVAudioEngine` instance via its private input unit.
@@ -78,9 +79,10 @@ enum AudioInputDevices {
         return "\(d.name) [\(d.transport ?? "?")]"
     }
 
-    /// The Mac's built-in microphone, the always-reliable fallback when a
-    /// finicky BT headset mic makes AVAudioEngine throw -10868 forever.
+    /// The built-in mic cannot capture with the lid closed, even though
+    /// Core Audio still advertises it as a working input.
     static func builtInInput() -> Info? {
+        guard !clamshellClosed() else { return nil }
         return list().first(where: { $0.transport == "BuiltIn" })
     }
 
@@ -98,12 +100,29 @@ enum AudioInputDevices {
     /// default. Does a full device walk, call it off the main thread.
     static func wiredReplacementForBluetoothDefault() -> Info? {
         let defaultID = systemDefaultInputDeviceID()
-        guard defaultID != kAudioObjectUnknown, transportType(deviceID: defaultID) == "Bluetooth" else { return nil }
-        let candidates = list().filter { $0.transport == "BuiltIn" || $0.transport == "USB" }
+        let defaultIsBluetooth = defaultID != kAudioObjectUnknown && transportType(deviceID: defaultID) == "Bluetooth"
+        guard defaultIsBluetooth else { return nil }
+        return pickWiredReplacement(candidates: list(), defaultIsBluetooth: defaultIsBluetooth,
+                                    clamshellClosed: clamshellClosed())
+    }
+
+    static func pickWiredReplacement(candidates: [Info], defaultIsBluetooth: Bool, clamshellClosed: Bool) -> Info? {
+        guard defaultIsBluetooth else { return nil }
+        let candidates = candidates.filter {
+            ($0.transport == "BuiltIn" && !clamshellClosed) || $0.transport == "USB"
+        }
         func rank(_ d: Info) -> (Int, Int) {
             (d.transport == "BuiltIn" ? 0 : 1, d.name.lowercased().contains("microphone") ? 0 : 1)
         }
         return candidates.min { rank($0) < rank($1) }
+    }
+
+    private static func clamshellClosed() -> Bool {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard service != IO_OBJECT_NULL else { return false }
+        defer { IOObjectRelease(service) }
+        return IORegistryEntryCreateCFProperty(service, "AppleClamshellState" as CFString,
+                                               kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool ?? false
     }
 
     // MARK: - Apply to AVAudioEngine

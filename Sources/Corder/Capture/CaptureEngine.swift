@@ -36,6 +36,14 @@ enum CaptureSource: Hashable {
     case window(windowID: CGWindowID, title: String, ownerName: String, width: Int, height: Int)
 }
 
+private final class HALMicSession: @unchecked Sendable {
+    let deviceName: String
+    // Accessed only on writeQueue, after the HAL's reused buffer is copied.
+    var silenceDetector = InitialDigitalSilenceDetector()
+
+    init(deviceName: String) { self.deviceName = deviceName }
+}
+
 @MainActor
 final class CaptureEngine: NSObject {
     weak var delegate: CaptureEngineDelegate?
@@ -80,6 +88,10 @@ final class CaptureEngine: NSObject {
     /// The AUHAL mic capture when a Bluetooth default input was replaced by
     /// the wired mic (otherwise the mic runs on `audioEngine`).
     private var halMic: HALMicCapture?
+    private var halMicSession: HALMicSession?
+    /// Once a replacement delivered digital silence, route changes must not
+    /// select it again for the rest of this recording.
+    private var micReplacementDisabled = false
     private var micReconfigInFlight = false
     private var micReconfigAgain = false
     private var lastWatchdogRetap = Date.distantPast
@@ -254,6 +266,7 @@ final class CaptureEngine: NSObject {
         stopRequestedDuringStart = false
         defer { starting = false }
         tearingDown = false
+        micReplacementDisabled = false
         outputBluetoothAtStart = SystemAudioTap.defaultOutputIsBluetooth()
         if outputBluetoothAtStart {
             FileLogger.log("CaptureEngine.start: default OUTPUT is Bluetooth, process tap may capture silence (remote side at risk)")
@@ -797,6 +810,7 @@ final class CaptureEngine: NSObject {
         audioEngine = nil
         halMic?.stop()
         halMic = nil
+        halMicSession = nil
 
         // All buffer sources are now stopped (SCStream, process tap, mic), so
         // no NEW write is dispatched. Drain any writes still queued on the
@@ -1158,7 +1172,8 @@ extension CaptureEngine: SCStreamOutput {
         // writeMicBuffer, as for any device switch.
         halMic?.stop()
         halMic = nil
-        if chosenUID == nil,
+        halMicSession = nil
+        if chosenUID == nil, !micReplacementDisabled,
            let wired = await Self.offMain({ AudioInputDevices.wiredReplacementForBluetoothDefault() }),
            let deviceID = AudioInputDevices.resolveDeviceID(forUID: wired.uid) {
             guard isRecording, !tearingDown else { return }
@@ -1166,7 +1181,7 @@ extension CaptureEngine: SCStreamOutput {
                 micConverter = nil
                 micRetapPending = true
             }
-            if let hal = try? makeHALMic(deviceID: deviceID) {
+            if let hal = try? makeHALMic(deviceID: deviceID, deviceName: wired.name) {
                 halMic = hal
                 audioEngine = nil
                 micReconfigAttempts = 0
@@ -1663,12 +1678,51 @@ extension CaptureEngine {
     }
 
     /// AUHAL capture feeding the same writer as the engine tap.
-    fileprivate func makeHALMic(deviceID: AudioDeviceID) throws -> HALMicCapture {
-        try HALMicCapture(deviceID: deviceID) { [weak self] buffer, when in
-            guard let self else { return }
-            RecordingLevelMeter.shared.ingestMic(buffer: buffer)
-            guard let copy = Self.copyPCM(buffer) else { return }
-            self.writeQueue.async { [weak self] in self?.writeMicBuffer(copy, when: when) }
+    fileprivate func makeHALMic(deviceID: AudioDeviceID, deviceName: String) throws -> HALMicCapture {
+        let session = HALMicSession(deviceName: deviceName)
+        halMicSession = session
+        do {
+            return try HALMicCapture(deviceID: deviceID) { [weak self] buffer, when in
+                guard let self else { return }
+                RecordingLevelMeter.shared.ingestMic(buffer: buffer)
+                guard let copy = Self.copyPCM(buffer) else { return }
+                self.writeQueue.async { [weak self] in
+                    guard let self, !self.tearingDown else { return }
+                    self.writeMicBuffer(copy, when: when)
+                    guard !session.silenceDetector.finished, let channels = copy.floatChannelData else { return }
+                    var peak: Float = 0
+                    for channel in 0..<Int(copy.format.channelCount) {
+                        for frame in 0..<Int(copy.frameLength) {
+                            peak = max(peak, abs(channels[channel][frame]))
+                        }
+                    }
+                    if session.silenceDetector.observe(peak: peak, frameCount: Int(copy.frameLength),
+                                                       sampleRate: copy.format.sampleRate) {
+                        Task { @MainActor [weak self] in self?.fallbackFromSilentHALMic(session) }
+                    }
+                }
+            }
+        } catch {
+            halMicSession = nil
+            throw error
+        }
+    }
+
+    private func fallbackFromSilentHALMic(_ session: HALMicSession) {
+        // A queued check from a retired HAL must not tear down a new device
+        // or a later recording that already started on this CaptureEngine.
+        guard halMicSession === session, !tearingDown, isRecording || starting else { return }
+        FileLogger.log("CaptureEngine: mic replacement '\(session.deviceName)' delivers digital silence, falling back to the default input")
+        micReplacementDisabled = true
+        halMic?.stop()
+        halMic = nil
+        halMicSession = nil
+        // Reuse the open micFile, shared-clock gap fill and format converter.
+        // startEngineMic opens a new file and would truncate the HAL audio.
+        if isRecording {
+            handleMicConfigChange()
+        } else {
+            micConfigChangedDuringStart = true
         }
     }
 
@@ -1677,7 +1731,7 @@ extension CaptureEngine {
     fileprivate func startHALMic(device: AudioInputDevices.Info, micURL: URL) -> Bool {
         guard let deviceID = AudioInputDevices.resolveDeviceID(forUID: device.uid) else { return false }
         do {
-            let hal = try makeHALMic(deviceID: deviceID)
+            let hal = try makeHALMic(deviceID: deviceID, deviceName: device.name)
             do {
                 let file = try AVAudioFile(forWriting: micURL,
                                            settings: Self.captureFileSettings(for: hal.format),
@@ -1685,6 +1739,7 @@ extension CaptureEngine {
                 writeQueue.sync { self.micFile = file }
             } catch {
                 hal.stop()
+                halMicSession = nil
                 FileLogger.log("CaptureEngine.start: could not open mic.wav for '\(device.name)': \(error)")
                 return false
             }

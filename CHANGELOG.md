@@ -16,6 +16,12 @@ behaviour, not internal refactors.
 
 ### Fixed
 
+## [0.15.95] - 2026-10-26
+
+### Fixed
+
+- With the MacBook lid closed and Bluetooth headphones on, your own voice was not recorded. Corder picked the Mac's built-in microphone, which is off while the lid is closed. Now it skips it with the lid closed, and if the microphone it picked gives only silence, it switches to your headphones within two seconds and keeps recording into the same file.
+
 ## [0.15.94] - 2026-10-21
 
 ### Fixed
